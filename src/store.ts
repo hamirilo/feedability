@@ -20,6 +20,15 @@ import {
 } from "./lib/api";
 import { PANE_DEFAULT, savedWidth, type Pane } from "./lib/layout";
 import { warn } from "./lib/log";
+import {
+  DEFAULT_LINE_HEIGHT,
+  DEFAULT_TEXT_SIZE,
+  DEFAULT_TEXT_WIDTH,
+  LINE_HEIGHTS,
+  TEXT_SIZES,
+  TEXT_WIDTHS,
+  validStep,
+} from "./lib/reading";
 import { applyTheme } from "./lib/theme";
 
 export interface ToastAction {
@@ -80,6 +89,10 @@ interface Prefs {
   /** Pane widths in px (docs/LAYOUT.md). */
   sidebarWidth: number;
   listWidth: number;
+  /** Reader display: indexes into the steps of lib/reading.ts (docs/READING.md). */
+  textSize: number;
+  lineHeight: number;
+  textWidth: number;
 }
 function loadPrefs(): Prefs {
   const fallback: Prefs = {
@@ -88,10 +101,20 @@ function loadPrefs(): Prefs {
     collapsed: [],
     sidebarWidth: PANE_DEFAULT.sidebar,
     listWidth: PANE_DEFAULT.list,
+    textSize: DEFAULT_TEXT_SIZE,
+    lineHeight: DEFAULT_LINE_HEIGHT,
+    textWidth: DEFAULT_TEXT_WIDTH,
   };
   try {
     const p = { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
-    return { ...p, sidebarWidth: savedWidth("sidebar", p.sidebarWidth), listWidth: savedWidth("list", p.listWidth) };
+    return {
+      ...p,
+      sidebarWidth: savedWidth("sidebar", p.sidebarWidth),
+      listWidth: savedWidth("list", p.listWidth),
+      textSize: validStep(p.textSize, TEXT_SIZES.length, fallback.textSize),
+      lineHeight: validStep(p.lineHeight, LINE_HEIGHTS.length, fallback.lineHeight),
+      textWidth: validStep(p.textWidth, TEXT_WIDTHS.length, fallback.textWidth),
+    };
   } catch {
     return fallback;
   }
@@ -112,6 +135,10 @@ export interface State {
   /** The saved pane widths; what is drawn is kept inside the window (usePaneWidths). */
   sidebarWidth: number;
   listWidth: number;
+  /** Reader display: indexes into TEXT_SIZES / LINE_HEIGHTS / TEXT_WIDTHS. */
+  textSize: number;
+  lineHeight: number;
+  textWidth: number;
   search: string;
   articles: ArticleRow[];
   /** The list has been asked at least once (empty states wait for it). */
@@ -150,6 +177,11 @@ export interface State {
   savePaneWidths: () => void;
   /** Double click on a handle: the default width, saved. */
   resetPaneWidth: (pane: Pane) => void;
+  setTextSize: (i: number) => void;
+  setLineHeight: (i: number) => void;
+  setTextWidth: (i: number) => void;
+  /** 標準に戻す: size, line height and width. */
+  resetReading: () => void;
   setSearch: (s: string) => void;
   toggleFolder: (id: number) => void;
   select: (id: number | null) => Promise<void>;
@@ -188,6 +220,13 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined;
 /** The latest list query: an older answer arriving late is dropped. */
 let querySeq = 0;
 let articleSeq = 0;
+/** 開いて 2 秒後 (markReadOn "delay"): the pending mark-as-read of the open article. */
+let readTimer: ReturnType<typeof setTimeout> | undefined;
+const READ_DELAY_MS = 2000;
+const cancelReadTimer = () => {
+  clearTimeout(readTimer);
+  readTimer = undefined;
+};
 /**
  * The open article, when it was in あとで読む as it was opened: leaving it
  * (another article, another view) means it has been read, and it goes out
@@ -208,6 +247,9 @@ export const useStore = create<State>((set, get) => {
       collapsed: [...get().collapsed],
       sidebarWidth: get().sidebarWidth,
       listWidth: get().listWidth,
+      textSize: get().textSize,
+      lineHeight: get().lineHeight,
+      textWidth: get().textWidth,
     });
   /** Asks the list again; whether the answer was used (false: a newer query overtook it, or it failed). */
   const load = async (): Promise<boolean> => {
@@ -226,6 +268,7 @@ export const useStore = create<State>((set, get) => {
   const switchView = (v: View): Promise<boolean> => {
     if (sameView(v, get().view)) return Promise.resolve(false);
     leave(null);
+    cancelReadTimer();
     set({ view: v, selectedId: null, article: null });
     return load();
   };
@@ -285,13 +328,16 @@ export const useStore = create<State>((set, get) => {
     oldestFirst: prefs.oldestFirst,
     sidebarWidth: prefs.sidebarWidth,
     listWidth: prefs.listWidth,
+    textSize: prefs.textSize,
+    lineHeight: prefs.lineHeight,
+    textWidth: prefs.textWidth,
     search: "",
     articles: [],
     loaded: false,
     selectedId: null,
     article: null,
     collapsed: new Set(prefs.collapsed),
-    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false },
+    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open" },
     icons: {},
     refreshing: null,
     updating: null,
@@ -423,6 +469,23 @@ export const useStore = create<State>((set, get) => {
       savePrefsNow();
     },
 
+    setTextSize: (i) => {
+      set({ textSize: validStep(i, TEXT_SIZES.length, get().textSize) });
+      savePrefsNow();
+    },
+    setLineHeight: (i) => {
+      set({ lineHeight: validStep(i, LINE_HEIGHTS.length, get().lineHeight) });
+      savePrefsNow();
+    },
+    setTextWidth: (i) => {
+      set({ textWidth: validStep(i, TEXT_WIDTHS.length, get().textWidth) });
+      savePrefsNow();
+    },
+    resetReading: () => {
+      set({ textSize: DEFAULT_TEXT_SIZE, lineHeight: DEFAULT_LINE_HEIGHT, textWidth: DEFAULT_TEXT_WIDTH });
+      savePrefsNow();
+    },
+
     setSearch: (search) => {
       set({ search });
       clearTimeout(searchTimer);
@@ -438,6 +501,7 @@ export const useStore = create<State>((set, get) => {
 
     select: async (id) => {
       const seq = ++articleSeq;
+      cancelReadTimer();
       leave(id);
       set({ selectedId: id, article: id === get().article?.id ? get().article : null });
       if (id === null) return;
@@ -446,11 +510,22 @@ export const useStore = create<State>((set, get) => {
         if (seq !== articleSeq) return;
         set({ article });
         if (finishOnLeave !== id) finishOnLeave = article.later ? id : null;
-        // Opening an article reads it.
-        if (!article.read) {
+        if (article.read) return;
+        const { markReadOn } = get().settings;
+        if (markReadOn === "open") {
           await api.setRead([id], true);
           patch([id], { read: true });
           void get().reloadSidebar();
+        } else if (markReadOn === "delay") {
+          // Only if it is still the open article then (J / K past it cancels).
+          readTimer = setTimeout(() => {
+            readTimer = undefined;
+            if (get().selectedId !== id) return;
+            api.setRead([id], true).then(() => {
+              patch([id], { read: true });
+              void get().reloadSidebar();
+            }, fail);
+          }, READ_DELAY_MS);
         }
       } catch (e) {
         if (seq === articleSeq) fail(e);
@@ -469,6 +544,7 @@ export const useStore = create<State>((set, get) => {
     toggleRead: async () => {
       const a = get().article;
       if (!a) return;
+      cancelReadTimer();
       try {
         await api.setRead([a.id], !a.read);
         patch([a.id], { read: !a.read });

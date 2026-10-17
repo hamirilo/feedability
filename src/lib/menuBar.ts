@@ -31,7 +31,7 @@ const st = () => useStore.getState();
 
 /** "Mod+Shift+N" → "CmdOrCtrl+Shift+N". */
 function accelerator(key: string): string {
-  const names: Record<string, string> = { Mod: "CmdOrCtrl", ",": "Comma" };
+  const names: Record<string, string> = { Mod: "CmdOrCtrl", ",": "Comma", Plus: "Equal", Minus: "Minus" };
   return key
     .split("+")
     .map((p) => names[p] ?? p)
@@ -150,7 +150,7 @@ async function build(): Promise<Menu> {
     cmd("list.markBelowRead"),
   ]);
 
-  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly"), cmd("list.oldestFirst")]);
+  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly"), cmd("list.oldestFirst"), sep(), cmd("view.textBigger"), cmd("view.textSmaller"), cmd("view.textReset")]);
 
   const windowMenu = isMac
     ? [

@@ -7,13 +7,14 @@
  *
  * Links open in the OS's browser; the app's window never navigates.
  */
-import { CircleDot, Clock, ExternalLink, Star } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { CircleDot, Clock, ExternalLink, Minus, Plus, Star, Type } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { openInBrowser } from "../lib/actions";
 import { api } from "../lib/api";
 import { command, isEnabled, runCommand } from "../lib/commands";
 import { fullDate } from "../lib/format";
 import { warn } from "../lib/log";
+import { LINE_HEIGHTS, TEXT_SIZES, TEXT_WIDTHS } from "../lib/reading";
 import { withKey } from "../lib/shortcuts";
 import { dragRegion } from "../lib/titleBar";
 import { useStore } from "../store";
@@ -119,9 +120,110 @@ function ToolButton({
   );
 }
 
+function Steps({
+  label,
+  steps,
+  value,
+  onPick,
+}: {
+  label: string;
+  steps: { label: string }[];
+  value: number;
+  onPick: (i: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-dim">{label}</span>
+      <div className="flex rounded-md bg-bg p-0.5 text-xs" role="radiogroup" aria-label={label}>
+        {steps.map((st, i) => (
+          <button
+            key={st.label}
+            role="radio"
+            aria-checked={value === i}
+            onClick={() => onPick(i)}
+            className={`rounded px-2.5 py-0.5 ${value === i ? "bg-raised text-fg shadow" : "text-dim hover:text-fg"}`}
+          >
+            {st.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 「Aa」: the display panel (docs/READING.md). Not a modal: the keys keep working. */
+function DisplayButton() {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const textSize = useStore((s) => s.textSize);
+  const lineHeight = useStore((s) => s.lineHeight);
+  const textWidth = useStore((s) => s.textWidth);
+  const smaller = useStore((s) => isEnabled(command("view.textSmaller"), s));
+  const bigger = useStore((s) => isEnabled(command("view.textBigger"), s));
+  const setLineHeight = useStore((s) => s.setLineHeight);
+  const setTextWidth = useStore((s) => s.setTextWidth);
+  const resetReading = useStore((s) => s.resetReading);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const close = () => setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", close);
+    };
+  }, [open]);
+  const step = "rounded-md p-1.5 text-dim hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent";
+  return (
+    <div ref={box} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        title="文字と表示"
+        aria-label="文字と表示"
+        aria-expanded={open}
+        className={`rounded-md p-1.5 hover:bg-hover ${open ? "bg-hover text-fg" : "text-dim hover:text-fg"}`}
+      >
+        <Type size={16} />
+      </button>
+      {open && (
+        <div data-tauri-drag-region="false" role="dialog" aria-label="文字と表示" className="absolute top-full right-0 z-40 mt-1 w-72 space-y-3 rounded-lg border border-line bg-raised p-3 shadow-2xl shadow-black/60">
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-dim">文字の大きさ</span>
+            <div className="flex items-center gap-1">
+              <button className={step} disabled={!smaller} onClick={() => runCommand("view.textSmaller")} title={withKey("文字を小さく", "view.textSmaller")} aria-label="文字を小さく">
+                <Minus size={14} />
+              </button>
+              <span className="w-12 text-center tabular-nums">{TEXT_SIZES[textSize]} px</span>
+              <button className={step} disabled={!bigger} onClick={() => runCommand("view.textBigger")} title={withKey("文字を大きく", "view.textBigger")} aria-label="文字を大きく">
+                <Plus size={14} />
+              </button>
+            </div>
+          </div>
+          <Steps label="行間" steps={LINE_HEIGHTS} value={lineHeight} onPick={setLineHeight} />
+          <Steps label="本文の幅" steps={TEXT_WIDTHS} value={textWidth} onPick={setTextWidth} />
+          <div className="text-right">
+            <button onClick={resetReading} className="text-xs text-dim hover:text-fg">
+              標準に戻す
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Reader() {
   const article = useStore((s) => s.article);
   const selectedId = useStore((s) => s.selectedId);
+  const textSize = useStore((s) => s.textSize);
+  const lineHeight = useStore((s) => s.lineHeight);
+  const textWidth = useStore((s) => s.textWidth);
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scroller.current?.scrollTo({ top: 0 });
@@ -135,6 +237,7 @@ export function Reader() {
         className="flex shrink-0 items-center justify-end gap-0.5 border-b border-line px-3"
         style={{ height: "max(var(--titlebar), 44px)" }}
       >
+        <DisplayButton />
         <ToolButton id="article.read" icon={<CircleDot size={16} />} label={article && !article.read ? "既読にする" : "未読にする"} />
         <ToolButton
           id="article.star"
@@ -152,12 +255,24 @@ export function Reader() {
       </header>
       <div id="reader-scroll" ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         {article ? (
-          <article className="mx-auto max-w-[720px] px-8 pt-8 pb-24">
+          <article
+            className="mx-auto px-8 pt-8 pb-24"
+            style={
+              {
+                maxWidth: TEXT_WIDTHS[textWidth].value,
+                "--article-size": `${TEXT_SIZES[textSize]}px`,
+                "--article-leading": LINE_HEIGHTS[lineHeight].value,
+              } as React.CSSProperties
+            }
+          >
             <div className="flex items-center gap-1.5 text-xs text-dim">
               <FeedIcon feedId={article.feedId} size={12} />
               <span className="min-w-0 truncate">{article.feedTitle}</span>
             </div>
-            <h1 className="mt-1 text-[22px] leading-snug font-bold select-text">
+            <h1
+              className="mt-1 leading-snug font-bold select-text"
+              style={{ fontSize: "calc(var(--article-size) * 22 / 15)" }}
+            >
               {article.url ? (
                 <a
                   href={article.url}

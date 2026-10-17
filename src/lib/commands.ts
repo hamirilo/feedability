@@ -32,6 +32,7 @@ import {
   renameFolderDialog,
 } from "./actions";
 import { api, filtersUnread } from "./api";
+import { DEFAULT_TEXT_SIZE, TEXT_SIZES } from "./reading";
 import { checkForUpdate } from "./update";
 import { useStore, type State } from "../store";
 
@@ -228,6 +229,31 @@ export const COMMANDS: Command[] = [
   { id: "view.later", title: "あとで読む", keys: ["Mod+2"], keyBy: "global", run: (s) => s.setView({ kind: "later" }) },
   { id: "view.starred", title: "スター付き", keys: ["Mod+3"], keyBy: "global", run: (s) => s.setView({ kind: "starred" }) },
 
+  {
+    id: "view.textBigger",
+    title: "文字を大きく",
+    keys: ["Mod+Plus"],
+    keyBy: "global",
+    enabled: (s) => s.textSize < TEXT_SIZES.length - 1,
+    run: (s) => s.setTextSize(s.textSize + 1),
+  },
+  {
+    id: "view.textSmaller",
+    title: "文字を小さく",
+    keys: ["Mod+Minus"],
+    keyBy: "global",
+    enabled: (s) => s.textSize > 0,
+    run: (s) => s.setTextSize(s.textSize - 1),
+  },
+  {
+    id: "view.textReset",
+    title: "文字の大きさを標準に",
+    keys: ["Mod+0"],
+    keyBy: "global",
+    enabled: (s) => s.textSize !== DEFAULT_TEXT_SIZE,
+    run: (s) => s.setTextSize(DEFAULT_TEXT_SIZE),
+  },
+
   // ------------------------------------------------------------- article
   {
     id: "article.read",
@@ -316,6 +342,11 @@ function keyMatches(key: string, e: KeyboardEvent): boolean {
   switch (key) {
     case "?":
       return e.key === "?";
+    case "Plus":
+      // ⌘= (US) and ⌘+ / ⌘; with Shift (JIS) alike.
+      return e.key === "+" || e.key === "=" || e.code === "Equal" || e.code === "NumpadAdd";
+    case "Minus":
+      return e.key === "-" || e.code === "Minus" || e.code === "NumpadSubtract";
     case ",":
       return e.code === "Comma";
     case "Space":
@@ -325,14 +356,14 @@ function keyMatches(key: string, e: KeyboardEvent): boolean {
   }
 }
 
-/** Whether `e` is exactly `combo` (no extra modifiers; Shift is free for "?"). */
+/** Whether `e` is exactly `combo` (no extra modifiers; Shift is free for "?" and "Plus"). */
 export function comboMatches(combo: string, e: KeyboardEvent): boolean {
   const parts = combo.split("+");
   const key = parts.pop()!;
   const mods = new Set(parts);
   if ((e.metaKey || e.ctrlKey) !== mods.has("Mod")) return false;
   if (e.altKey !== mods.has("Alt")) return false;
-  if (key !== "?" && e.shiftKey !== mods.has("Shift")) return false;
+  if (key !== "?" && key !== "Plus" && e.shiftKey !== mods.has("Shift")) return false;
   return keyMatches(key, e);
 }
 

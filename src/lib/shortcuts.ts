@@ -30,6 +30,9 @@ export function shortcutSections(): ShortcutSection[] {
         cmd("view.later"),
         cmd("view.starred"),
         cmd("edit.search"),
+        cmd("view.textBigger"),
+        cmd("view.textSmaller"),
+        cmd("view.textReset"),
         cmd("app.settings", "設定"),
         cmd("help.shortcuts", "ショートカット一覧"),
       ],
@@ -74,7 +77,7 @@ const MAC: Record<string, string> = {
   Enter: "Return",
 };
 const OTHER: Record<string, string> = { Mod: "Ctrl", Alt: "Alt", Shift: "Shift" };
-const BOTH: Record<string, string> = { ArrowDown: "↓", ArrowUp: "↑", Space: "Space", Esc: "Esc" };
+const BOTH: Record<string, string> = { Plus: "+", Minus: "−", ArrowDown: "↓", ArrowUp: "↑", Space: "Space", Esc: "Esc" };
 
 /** The parts of a combo as shown, each drawn as a key. */
 export function keyParts(combo: string): string[] {

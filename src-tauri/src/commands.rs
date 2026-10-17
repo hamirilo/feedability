@@ -89,6 +89,20 @@ pub struct AppSettings {
     pub theme: Theme,
     /// After すべて既読, move on to the next feed with unread articles.
     next_feed_after_read_all: bool,
+    /// When opening an article marks it read (docs/READING.md).
+    mark_read_on: MarkReadOn,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MarkReadOn {
+    /// As soon as it is opened.
+    #[default]
+    Open,
+    /// Two seconds after it is opened.
+    Delay,
+    /// Only by hand.
+    Manual,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -134,6 +148,7 @@ impl Default for AppSettings {
             keep_days: 30,
             theme: Theme::System,
             next_feed_after_read_all: false,
+            mark_read_on: MarkReadOn::Open,
         }
     }
 }
@@ -863,4 +878,18 @@ pub async fn system_proxy(url: String) -> Option<String> {
         .await
         .ok()
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_without_mark_read_on_load_as_open() {
+        let s: AppSettings = serde_json::from_str(r#"{"autoUpdate":false,"keepDays":7}"#).unwrap();
+        assert_eq!(s.mark_read_on, MarkReadOn::Open);
+        assert!(!s.auto_update);
+        let s: AppSettings = serde_json::from_str(r#"{"markReadOn":"delay"}"#).unwrap();
+        assert_eq!(s.mark_read_on, MarkReadOn::Delay);
+    }
 }

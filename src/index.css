@@ -158,8 +158,8 @@ textarea {
    Only element selectors, since the feed's classes are gone. Text can be
    selected and copied, unlike the rest of the app. */
 .article {
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: var(--article-size, 15px);
+  line-height: var(--article-leading, 1.8);
   overflow-wrap: anywhere;
   user-select: text;
   -webkit-user-select: text;
