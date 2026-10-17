@@ -438,12 +438,13 @@ pub fn feed_info(conn: &Connection, id: i64) -> DbResult<Option<FeedInfo>> {
 }
 
 /// Points the feed at a new URL. What belongs to the old address is cleared:
-/// the conditional-request headers, the error, the icon and where it came
-/// from (it is looked up again). The user's name and the articles stay. Fails
+/// the conditional-request headers, the error, the site (the new feed names
+/// its own, or has none), the icon and where it came from (it is looked up
+/// again). The user's name and the articles stay. Fails
 /// on a URL another feed has (`UNIQUE`). False: there is no such feed.
 pub fn change_feed_url(conn: &Connection, id: i64, url: &str) -> DbResult<bool> {
     let n = conn.execute(
-        "UPDATE feeds SET url = ?2, etag = NULL, last_modified = NULL, error = NULL,
+        "UPDATE feeds SET url = ?2, etag = NULL, last_modified = NULL, error = NULL, site_url = NULL,
                           icon = NULL, icon_checked_at = NULL, icon_url = NULL, logo_url = NULL
          WHERE id = ?1",
         params![id, url],
@@ -497,12 +498,14 @@ pub fn feeds_needing_icon(conn: &Connection, older_than_ms: i64) -> DbResult<Vec
     rows.collect()
 }
 
-/// A lookup's result. The check is recorded either way; `None` (nothing found,
-/// or the site didn't answer) keeps the icon the feed already had.
-pub fn set_icon(conn: &Connection, id: i64, icon: Option<&str>) -> DbResult<()> {
+/// A lookup's result for the feed at `url`. The check is recorded either way;
+/// `None` (nothing found, or the site didn't answer) keeps the icon the feed
+/// already had. Nothing is written when the feed has moved to another URL
+/// meanwhile: the result is the old site's, and the move left the check pending.
+pub fn set_icon(conn: &Connection, id: i64, url: &str, icon: Option<&str>) -> DbResult<()> {
     conn.execute(
-        "UPDATE feeds SET icon = COALESCE(?2, icon), icon_checked_at = ?3 WHERE id = ?1",
-        params![id, icon, now_ms()],
+        "UPDATE feeds SET icon = COALESCE(?3, icon), icon_checked_at = ?4 WHERE id = ?1 AND url = ?2",
+        params![id, url, icon, now_ms()],
     )?;
     Ok(())
 }
@@ -1157,7 +1160,13 @@ mod tests {
         assert_eq!(v, 3);
         // The existing feed has never been looked up.
         assert_eq!(feeds_needing_icon(&conn, 0).unwrap().len(), 1);
-        set_icon(&conn, 1, Some("data:image/png;base64,AA==")).unwrap();
+        set_icon(
+            &conn,
+            1,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
         assert_eq!(icons(&conn).unwrap().len(), 1);
     }
 
@@ -1304,7 +1313,14 @@ mod tests {
     #[test]
     fn changing_the_url_clears_what_belonged_to_the_old_one() {
         let mut conn = open_in_memory().unwrap();
-        let a = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
+        let a = add_feed(
+            &conn,
+            "https://a.example/feed",
+            "A",
+            Some("https://a.example/"),
+            None,
+        )
+        .unwrap();
         let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
         store_articles(&mut conn, a, &[art("1", "one", 1)]).unwrap();
         rename_feed(&conn, a, "私の名前").unwrap();
@@ -1318,7 +1334,13 @@ mod tests {
         )
         .unwrap();
         set_icon_urls(&conn, a, Some("https://a.example/icon.png"), None).unwrap();
-        set_icon(&conn, a, Some("data:image/png;base64,AA==")).unwrap();
+        set_icon(
+            &conn,
+            a,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
         feed_failed(&conn, a, "見つかりません（HTTP 404）").unwrap();
 
         // Another feed's URL: refused, and nothing changed.
@@ -1334,6 +1356,7 @@ mod tests {
         assert_eq!(info.title, "私の名前", "the user's name stays");
         assert_eq!(info.original_title, "A");
         assert_eq!(info.error, None);
+        assert_eq!(info.site_url, None, "the old site goes with the old URL");
         assert_eq!(info.articles, 1, "articles stay");
         let t = feed_targets(&conn, Some(&[a][..])).unwrap().remove(0);
         assert_eq!((t.etag, t.last_modified), (None, None));
@@ -1341,6 +1364,18 @@ mod tests {
         assert!(icons(&conn).unwrap().is_empty());
         let needing = feeds_needing_icon(&conn, 0).unwrap();
         assert!(needing.iter().any(|t| t.id == a && t.icon_url.is_none()));
+        // A lookup for the old URL finishing late writes nothing, and the new
+        // site's icon is still to be looked up.
+        set_icon(
+            &conn,
+            a,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
+        assert!(icons(&conn).unwrap().is_empty());
+        let needing = feeds_needing_icon(&conn, now_ms() - 86_400_000).unwrap();
+        assert!(needing.iter().any(|t| t.id == a));
 
         // The same feed again is its own URL, not a conflict with itself.
         assert!(change_feed_url(&conn, a, "https://a.example/new.xml").unwrap());
@@ -1367,15 +1402,21 @@ mod tests {
         assert_eq!(todo[0].icon_url.as_deref(), Some("https://a.example/i.png"));
         assert_eq!(todo[0].logo_url.as_deref(), Some("https://a.example/l.png"));
 
-        set_icon(&conn, a, Some("data:image/png;base64,AA==")).unwrap();
+        set_icon(
+            &conn,
+            a,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
         // Nothing found still counts as a check, and keeps what was there.
-        set_icon(&conn, b, None).unwrap();
+        set_icon(&conn, b, "https://b.example/feed", None).unwrap();
         assert!(feeds_needing_icon(&conn, cutoff).unwrap().is_empty());
         assert_eq!(
             icons(&conn).unwrap(),
             [(a, "data:image/png;base64,AA==".to_string())]
         );
-        set_icon(&conn, a, None).unwrap();
+        set_icon(&conn, a, "https://a.example/feed", None).unwrap();
         assert_eq!(icons(&conn).unwrap().len(), 1);
         // Thirty days on, both are due again.
         let later = now_ms() + day;

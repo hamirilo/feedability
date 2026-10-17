@@ -766,12 +766,12 @@ async fn look_up_icons(app: &AppHandle, state: &AppState) {
             t.logo_url.as_deref(),
         )
         .await;
-        (t.id, icon)
+        (t.id, t.url, icon)
     }))
     .buffer_unordered(PARALLEL);
     let mut found = 0;
-    while let Some((id, icon)) = results.next().await {
-        match with_db(state, |c| db::set_icon(c, id, icon.as_deref())) {
+    while let Some((id, url, icon)) = results.next().await {
+        match with_db(state, |c| db::set_icon(c, id, &url, icon.as_deref())) {
             Ok(()) => found += usize::from(icon.is_some()),
             Err(e) => log::warn!("icon {id}: {e}"),
         }
