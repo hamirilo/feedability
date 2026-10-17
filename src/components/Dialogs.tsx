@@ -4,9 +4,9 @@
  */
 import { useState } from "react";
 import { addFeed, moveFeed } from "../lib/actions";
-import { composing } from "../lib/ime";
 import { useStore, type Dialog } from "../store";
-import { Buttons, field, Modal } from "./Modal";
+import { FeedInfoDialog } from "./FeedInfoDialog";
+import { Buttons, ErrorLine, field, Modal, useSubmit } from "./Modal";
 import { SettingsDialog } from "./SettingsDialog";
 import { ShortcutHelp } from "./ShortcutHelp";
 
@@ -25,35 +25,9 @@ export function Dialogs() {
       return <PromptDialog d={dialog} onClose={close} />;
     case "moveFeed":
       return <MoveFeedDialog feedId={dialog.feedId} onClose={close} />;
+    case "feedInfo":
+      return <FeedInfoDialog feedId={dialog.feedId} onClose={close} />;
   }
-}
-
-/** Submits on Enter, except the Enter that confirms an IME conversion. */
-function useSubmit(run: () => Promise<void>) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const onSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    run().then(
-      () => setBusy(false),
-      (err) => {
-        setBusy(false);
-        setError(String(err));
-      },
-    );
-  };
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && composing(e)) e.preventDefault();
-  };
-  return { busy, error, onSubmit, onKeyDown };
-}
-
-function ErrorLine({ error }: { error: string | null }) {
-  // The line is always there, so an error doesn't push the buttons down.
-  return <p className="mt-2 min-h-[1.25rem] text-xs text-danger">{error}</p>;
 }
 
 function FolderSelect({ value, onChange }: { value: number | null; onChange: (id: number | null) => void }) {

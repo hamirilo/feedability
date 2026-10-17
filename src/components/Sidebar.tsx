@@ -2,7 +2,7 @@
  * The views: すべて, スター付き, then the folders and their feeds. The buttons
  * at the top stay in place whatever is open (docs/UI.md).
  */
-import { AlertCircle, ChevronRight, Clock, Folder, FolderPlus, Inbox, Plus, RefreshCw, Rss, Star } from "lucide-react";
+import { AlertCircle, ChevronRight, Clock, Folder, FolderPlus, Inbox, Plus, RefreshCw, Star } from "lucide-react";
 import { useCallback, useState } from "react";
 import { command, isEnabled, runCommand } from "../lib/commands";
 import { sameView, type FeedRow, type View } from "../lib/api";
@@ -11,6 +11,8 @@ import { withKey } from "../lib/shortcuts";
 import { dragRegion } from "../lib/titleBar";
 import { useStore } from "../store";
 import { commandItem, ContextMenu, type MenuState } from "./ContextMenu";
+import { FeedIcon } from "./FeedIcon";
+import { ResizeHandle, usePaneWidths } from "./ResizeHandle";
 
 function Count({ n }: { n: number }) {
   return <span className="shrink-0 text-xs tabular-nums text-dim">{n > 0 ? n : ""}</span>;
@@ -70,6 +72,39 @@ function IconButton({ id, icon, label }: { id: string; icon: React.ReactNode; la
   );
 }
 
+/** The red mark of a feed that failed: a click opens the feed's information, with the full reason. */
+function ErrorMark({ feedId }: { feedId: number }) {
+  const setView = useStore((s) => s.setView);
+  // Opens the feed first, as the right-click menu does: the command acts on the open feed.
+  const open = () => {
+    setView({ kind: "feed", id: feedId });
+    runCommand("feed.info");
+  };
+  // Not a <button>: it sits inside the row's button.
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      aria-label="フィードの情報を開く"
+      title="更新できませんでした。クリックで詳細"
+      onClick={(e) => {
+        e.stopPropagation();
+        open();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          open();
+        }
+      }}
+      className="shrink-0 rounded text-danger hover:brightness-125"
+    >
+      <AlertCircle size={13} />
+    </span>
+  );
+}
+
 function FeedEntry({ feed, depth, onMenu }: { feed: FeedRow; depth: number; onMenu: (e: React.MouseEvent, f: FeedRow) => void }) {
   const tip = feed.error
     ? `${feed.url}\n更新できませんでした：${feed.error}`
@@ -77,13 +112,13 @@ function FeedEntry({ feed, depth, onMenu }: { feed: FeedRow; depth: number; onMe
   return (
     <Entry
       view={{ kind: "feed", id: feed.id }}
-      icon={<Rss size={14} className="shrink-0 text-dim" />}
+      icon={<FeedIcon feedId={feed.id} size={14} />}
       label={feed.title}
       count={feed.unread}
       depth={depth}
       title={tip}
       onContextMenu={(e) => onMenu(e, feed)}
-      after={feed.error ? <AlertCircle size={13} className="shrink-0 text-danger" /> : undefined}
+      after={feed.error ? <ErrorMark feedId={feed.id} /> : undefined}
     />
   );
 }
@@ -105,6 +140,8 @@ export function Sidebar() {
       x: e.clientX,
       y: e.clientY,
       items: [
+        commandItem("feed.info"),
+        "sep",
         commandItem("feed.refresh"),
         commandItem("list.markAllRead"),
         "sep",
@@ -131,9 +168,10 @@ export function Sidebar() {
     });
   };
 
+  const width = usePaneWidths().sidebar;
   const loose = sidebar.feeds.filter((f) => f.folderId === null);
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-panel">
+    <aside className="relative flex h-full shrink-0 flex-col border-r border-line bg-panel" style={{ width }}>
       {/* The top: room for the window buttons on macOS, and the app's buttons. */}
       <div
         {...dragRegion(true)}
@@ -186,6 +224,7 @@ export function Sidebar() {
         ))}
       </nav>
       <ContextMenu menu={menu} onClose={closeMenu} />
+      <ResizeHandle pane="sidebar" />
     </aside>
   );
 }

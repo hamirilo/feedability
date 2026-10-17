@@ -25,6 +25,7 @@ export function shortcutSections(): ShortcutSection[] {
         cmd("folder.new"),
         cmd("feed.refreshAll"),
         cmd("feed.refresh"),
+        cmd("feed.info"),
         cmd("view.all"),
         cmd("view.later"),
         cmd("view.starred"),

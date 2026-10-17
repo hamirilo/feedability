@@ -18,6 +18,7 @@ import {
   type Sidebar,
   type View,
 } from "./lib/api";
+import { PANE_DEFAULT, savedWidth, type Pane } from "./lib/layout";
 import { warn } from "./lib/log";
 import { applyTheme } from "./lib/theme";
 
@@ -60,7 +61,8 @@ export type Dialog =
       okLabel: string;
       onOk: (value: string) => Promise<void> | void;
     }
-  | { kind: "moveFeed"; feedId: number };
+  | { kind: "moveFeed"; feedId: number }
+  | { kind: "feedInfo"; feedId: number };
 
 export interface Updating {
   done: number;
@@ -75,11 +77,21 @@ interface Prefs {
   /** Oldest first (not in あとで読む, which keeps the order it was filled in). */
   oldestFirst: boolean;
   collapsed: number[];
+  /** Pane widths in px (docs/LAYOUT.md). */
+  sidebarWidth: number;
+  listWidth: number;
 }
 function loadPrefs(): Prefs {
-  const fallback: Prefs = { unreadOnly: true, oldestFirst: false, collapsed: [] };
+  const fallback: Prefs = {
+    unreadOnly: true,
+    oldestFirst: false,
+    collapsed: [],
+    sidebarWidth: PANE_DEFAULT.sidebar,
+    listWidth: PANE_DEFAULT.list,
+  };
   try {
-    return { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
+    const p = { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
+    return { ...p, sidebarWidth: savedWidth("sidebar", p.sidebarWidth), listWidth: savedWidth("list", p.listWidth) };
   } catch {
     return fallback;
   }
@@ -97,6 +109,9 @@ export interface State {
   view: View;
   unreadOnly: boolean;
   oldestFirst: boolean;
+  /** The saved pane widths; what is drawn is kept inside the window (usePaneWidths). */
+  sidebarWidth: number;
+  listWidth: number;
   search: string;
   articles: ArticleRow[];
   /** The list has been asked at least once (empty states wait for it). */
@@ -106,6 +121,8 @@ export interface State {
   /** Folders closed in the sidebar. */
   collapsed: Set<number>;
   settings: AppSettings;
+  /** Feed icons (data: URLs) by feed id; not part of the sidebar, which is asked again after every read. */
+  icons: Record<number, string>;
   refreshing: RefreshProgress | null;
   updating: Updating | null;
   dialog: Dialog | null;
@@ -113,6 +130,7 @@ export interface State {
 
   init: () => Promise<void>;
   reloadSidebar: () => Promise<void>;
+  reloadIcons: () => Promise<void>;
   reload: () => Promise<void>;
   setView: (v: View) => void;
   /** The feeds in the order the sidebar shows them: each folder's, then the loose ones. */
@@ -127,6 +145,11 @@ export interface State {
   moveFeed: (delta: 1 | -1) => void;
   setUnreadOnly: (on: boolean) => void;
   setOldestFirst: (on: boolean) => void;
+  /** While dragging a pane's handle: in memory only; `savePaneWidths` on release. */
+  setPaneWidth: (pane: Pane, width: number) => void;
+  savePaneWidths: () => void;
+  /** Double click on a handle: the default width, saved. */
+  resetPaneWidth: (pane: Pane) => void;
   setSearch: (s: string) => void;
   toggleFolder: (id: number) => void;
   select: (id: number | null) => Promise<void>;
@@ -179,7 +202,13 @@ export const useStore = create<State>((set, get) => {
     return { view: s.view, unreadOnly: s.unreadOnly, search: s.search.trim(), keep: s.selectedId, oldestFirst: s.oldestFirst };
   };
   const savePrefsNow = () =>
-    savePrefs({ unreadOnly: get().unreadOnly, oldestFirst: get().oldestFirst, collapsed: [...get().collapsed] });
+    savePrefs({
+      unreadOnly: get().unreadOnly,
+      oldestFirst: get().oldestFirst,
+      collapsed: [...get().collapsed],
+      sidebarWidth: get().sidebarWidth,
+      listWidth: get().listWidth,
+    });
   /** Asks the list again; whether the answer was used (false: a newer query overtook it, or it failed). */
   const load = async (): Promise<boolean> => {
     const seq = ++querySeq;
@@ -254,6 +283,8 @@ export const useStore = create<State>((set, get) => {
     view: { kind: "all" },
     unreadOnly: prefs.unreadOnly,
     oldestFirst: prefs.oldestFirst,
+    sidebarWidth: prefs.sidebarWidth,
+    listWidth: prefs.listWidth,
     search: "",
     articles: [],
     loaded: false,
@@ -261,6 +292,7 @@ export const useStore = create<State>((set, get) => {
     article: null,
     collapsed: new Set(prefs.collapsed),
     settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false },
+    icons: {},
     refreshing: null,
     updating: null,
     dialog: null,
@@ -274,7 +306,18 @@ export const useStore = create<State>((set, get) => {
       } catch (e) {
         warn("settings", e);
       }
-      await Promise.all([get().reloadSidebar(), get().reload()]);
+      await Promise.all([get().reloadSidebar(), get().reload(), get().reloadIcons()]);
+    },
+
+    reloadIcons: async () => {
+      try {
+        const icons: Record<number, string> = {};
+        for (const i of await api.feedIcons()) icons[i.feedId] = i.icon;
+        set({ icons });
+      } catch (e) {
+        // Icons are a nicety: the generic one stays.
+        warn("icons", e);
+      }
     },
 
     reloadSidebar: async () => {
@@ -371,6 +414,13 @@ export const useStore = create<State>((set, get) => {
       set({ oldestFirst: on });
       savePrefsNow();
       void get().reload();
+    },
+
+    setPaneWidth: (pane, width) => set(pane === "sidebar" ? { sidebarWidth: width } : { listWidth: width }),
+    savePaneWidths: () => savePrefsNow(),
+    resetPaneWidth: (pane) => {
+      get().setPaneWidth(pane, PANE_DEFAULT[pane]);
+      savePrefsNow();
     },
 
     setSearch: (search) => {

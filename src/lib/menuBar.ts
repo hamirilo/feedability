@@ -122,6 +122,7 @@ async function build(): Promise<Menu> {
     cmd("feed.refreshAll"),
     cmd("feed.refresh"),
     sep(),
+    cmd("feed.info"),
     cmd("feed.rename"),
     cmd("feed.move"),
     cmd("feed.delete"),

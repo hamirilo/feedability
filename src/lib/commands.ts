@@ -106,6 +106,17 @@ export const COMMANDS: Command[] = [
     },
   },
   {
+    id: "feed.info",
+    title: "フィードの情報…",
+    keys: ["Mod+I"],
+    keyBy: "global",
+    enabled: (s) => openFeed(s) !== null,
+    run: (s) => {
+      const id = openFeed(s);
+      if (id !== null) s.openDialog({ kind: "feedInfo", feedId: id });
+    },
+  },
+  {
     id: "feed.rename",
     title: "フィードの名前を変更…",
     enabled: (s) => openFeed(s) !== null,

@@ -26,15 +26,22 @@ export default function App() {
     const uninstallMenu = installMenuBar();
     const stopUpdate = scheduleUpdateCheck();
     let unlisten: (() => void) | undefined;
+    let unlistenIcons: (() => void) | undefined;
     api
       .onRefreshProgress((p) => useStore.getState().setRefreshing(p))
       .then((u) => (unlisten = u))
       .catch((e) => warn("refresh progress", e));
+    // Icons are looked up in the background, after a refresh or a subscription.
+    api
+      .onIconsChanged(() => void useStore.getState().reloadIcons())
+      .then((u) => (unlistenIcons = u))
+      .catch((e) => warn("icons changed", e));
     void useStore.getState().init();
     return () => {
       uninstallMenu();
       stopUpdate();
       unlisten?.();
+      unlistenIcons?.();
     };
   }, []);
 

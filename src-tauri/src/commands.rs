@@ -28,6 +28,10 @@ pub struct AppState {
     refreshing: AtomicBool,
     /// Asked to stop the running refresh (the progress toast's 中止).
     cancel: AtomicBool,
+    /// An icon pass is running, and another was asked for meanwhile (a feed
+    /// was added): one pass at a time, run again if asked.
+    icons_running: AtomicBool,
+    icons_again: AtomicBool,
 }
 
 pub(crate) fn err(e: impl ToString) -> String {
@@ -310,6 +314,7 @@ pub struct Added {
 /// Subscribes to `url`: a feed, or a web page that names its feed.
 #[tauri::command]
 pub async fn add_feed(
+    app: AppHandle,
     state: State<'_, AppState>,
     url: String,
     folder_id: Option<i64>,
@@ -333,10 +338,13 @@ pub async fn add_feed(
             res.etag.as_deref(),
             res.last_modified.as_deref(),
         )?;
+        db::set_icon_urls(c, id, parsed.icon.as_deref(), parsed.logo.as_deref())?;
         Ok(id)
     })?;
     let articles = with_db(&state, |c| db::store_articles(c, feed_id, &parsed.articles))?;
     log::info!("subscribed {feed_url} ({articles} articles)");
+    // After subscribing, in the background: the new feed's icon.
+    spawn_icon_pass(&app);
     Ok(Added {
         feed_id,
         title,
@@ -377,6 +385,57 @@ async fn fetch_feed_or_page(url: &str) -> CmdResult<(String, fetch::Response, fe
             Ok((first.clone(), res, parsed))
         }
     }
+}
+
+/// The feed-info dialog (docs/FEED_INFO.md).
+#[tauri::command]
+pub async fn get_feed_info(state: State<'_, AppState>, id: i64) -> CmdResult<db::FeedInfo> {
+    with_db(&state, |c| db::feed_info(c, id))?.ok_or_else(|| "フィードが見つかりません".to_string())
+}
+
+/// Points a feed at another URL after checking it: the feed itself, or a page
+/// that names it, as when subscribing. The user's name, the articles and their
+/// read state stay (articles are matched by guid); the old address's etag and
+/// error and the icon are cleared.
+#[tauri::command]
+pub async fn change_feed_url(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    url: String,
+) -> CmdResult<db::FeedInfo> {
+    let url = fetch::normalize_url(&url)?;
+    // Another feed has it. This feed's own URL is not a conflict.
+    let taken = |found: Option<i64>| found.is_some_and(|other| other != id);
+    if taken(with_db(&state, |c| db::feed_id_by_url(c, &url))?) {
+        return Err("このフィードはすでに購読しています".into());
+    }
+    let (feed_url, res, parsed) = fetch_feed_or_page(&url).await?;
+    if feed_url != url && taken(with_db(&state, |c| db::feed_id_by_url(c, &feed_url))?) {
+        return Err("このページのフィードはすでに購読しています".into());
+    }
+    let found = with_db(&state, |c| {
+        if !db::change_feed_url(c, id, &feed_url)? {
+            return Ok(false);
+        }
+        db::feed_fetched(
+            c,
+            id,
+            parsed.title.as_deref(),
+            parsed.site_url.as_deref(),
+            res.etag.as_deref(),
+            res.last_modified.as_deref(),
+        )?;
+        db::set_icon_urls(c, id, parsed.icon.as_deref(), parsed.logo.as_deref())?;
+        Ok(true)
+    })?;
+    if !found {
+        return Err("フィードが見つかりません".into());
+    }
+    let articles = with_db(&state, |c| db::store_articles(c, id, &parsed.articles))?;
+    log::info!("feed {id} moved to {feed_url} ({articles} new articles)");
+    spawn_icon_pass(&app);
+    with_db(&state, |c| db::feed_info(c, id))?.ok_or_else(|| "フィードが見つかりません".to_string())
 }
 
 #[tauri::command]
@@ -465,6 +524,8 @@ pub async fn refresh_feeds(
     state.cancel.store(false, Ordering::SeqCst);
     let result = refresh(&app, &state, ids).await;
     state.refreshing.store(false, Ordering::SeqCst);
+    // The refresh is over for the caller; icons follow in the background.
+    spawn_icon_pass(&app);
     result
 }
 
@@ -520,6 +581,7 @@ async fn refresh(
                     res.etag.as_deref(),
                     res.last_modified.as_deref(),
                 )?;
+                db::set_icon_urls(c, target.id, parsed.icon.as_deref(), parsed.logo.as_deref())?;
                 db::store_articles(c, target.id, &parsed.articles)
             }
             Err(e) => db::feed_failed(c, target.id, e).map(|_| 0),
@@ -550,6 +612,174 @@ async fn refresh(
 pub async fn cancel_refresh(state: State<'_, AppState>) -> CmdResult<()> {
     state.cancel.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+// ----------------------------------------------------------------- icons
+
+/// A feed's icon is looked up again after this long (docs/FAVICON.md).
+const ICON_RECHECK_MS: i64 = 30 * 86_400_000;
+
+/// Every feed's icon as a `data:` URL, kept apart from `get_sidebar`: that is
+/// asked again after every read, and the icons would make it heavy.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedIcon {
+    feed_id: i64,
+    icon: String,
+}
+
+#[tauri::command]
+pub async fn feed_icons(state: State<'_, AppState>) -> CmdResult<Vec<FeedIcon>> {
+    let icons = with_db(&state, |c| db::icons(c))?;
+    Ok(icons
+        .into_iter()
+        .map(|(feed_id, icon)| FeedIcon { feed_id, icon })
+        .collect())
+}
+
+/// An image URL as a `data:` URL: the right type by its content (no SVG) and
+/// within `MAX_ICON_BYTES` (`fetch::get` refuses more). Nothing on any failure.
+async fn icon_data_url(url: &str) -> Option<String> {
+    use base64::Engine;
+    let res = match fetch::get(url, None, None, fetch::ICON_ACCEPT, fetch::MAX_ICON_BYTES).await {
+        Ok(Outcome::Fetched(r)) => r,
+        Ok(Outcome::NotModified) => return None,
+        Err(e) => {
+            log::debug!("icon {url}: {e}");
+            return None;
+        }
+    };
+    let mime = fetch::image_type(&res.body)?;
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&res.body)
+    ))
+}
+
+/// How many of a page's icon links are tried before the next kind of source.
+const ICON_LINKS_TRIED: usize = 3;
+
+/// The icon for a feed, as a `data:` URL, from the first of these that gives
+/// an image: (1) the feed's own icon, (2) the `<link rel="icon">` tags of the
+/// site's page, (3) `/favicon.ico` of the site, (4) the feed's logo. The site
+/// is the feed's `site_url`, or the feed's own address when it has none.
+async fn fetch_icon(
+    feed_url: &str,
+    site_url: Option<&str>,
+    parsed_icon: Option<&str>,
+    parsed_logo: Option<&str>,
+) -> Option<String> {
+    if let Some(found) = match parsed_icon {
+        Some(u) => icon_data_url(u).await,
+        None => None,
+    } {
+        return Some(found);
+    }
+    let site = site_url
+        .and_then(|u| url::Url::parse(u).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .or_else(|| url::Url::parse(feed_url).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"));
+    let mut tried: Vec<String> = parsed_icon.iter().map(|u| u.to_string()).collect();
+    if let Some(site) = &site {
+        // The page can fail (or be missing) without the site having no icon.
+        let page = fetch::get(
+            site.as_str(),
+            None,
+            None,
+            fetch::PAGE_ACCEPT,
+            fetch::MAX_PAGE_BYTES,
+        )
+        .await;
+        if let Ok(Outcome::Fetched(res)) = page {
+            for link in feed::icon_links(&res.body, &res.url)
+                .into_iter()
+                .take(ICON_LINKS_TRIED)
+            {
+                if tried.contains(&link) {
+                    continue;
+                }
+                if let Some(found) = icon_data_url(&link).await {
+                    return Some(found);
+                }
+                tried.push(link);
+            }
+        }
+        let favicon = format!("{}/favicon.ico", site.origin().ascii_serialization());
+        if !tried.contains(&favicon) {
+            if let Some(found) = icon_data_url(&favicon).await {
+                return Some(found);
+            }
+            tried.push(favicon);
+        }
+    }
+    match parsed_logo {
+        Some(u) if !tried.iter().any(|t| t == u) => icon_data_url(u).await,
+        _ => None,
+    }
+}
+
+/// Looks up icons in the background (after a refresh, a subscription, a URL change).
+fn spawn_icon_pass(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { icon_pass(&app).await });
+}
+
+/// One pass at a time; one asked for meanwhile runs when this one is done.
+async fn icon_pass(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.icons_running.swap(true, Ordering::SeqCst) {
+        state.icons_again.store(true, Ordering::SeqCst);
+        return;
+    }
+    loop {
+        state.icons_again.store(false, Ordering::SeqCst);
+        look_up_icons(app, &state).await;
+        if !state.icons_again.load(Ordering::SeqCst) {
+            break;
+        }
+    }
+    state.icons_running.store(false, Ordering::SeqCst);
+}
+
+/// The feeds never looked up, or not for 30 days, six at a time. A failure is
+/// logged and recorded as a check (so it isn't retried at every refresh) and
+/// never reaches the refresh or the subscription that started the pass.
+async fn look_up_icons(app: &AppHandle, state: &AppState) {
+    let cutoff = db::now_ms() - ICON_RECHECK_MS;
+    let targets = match with_db(state, |c| db::feeds_needing_icon(c, cutoff)) {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("icons: {e}");
+            return;
+        }
+    };
+    if targets.is_empty() {
+        return;
+    }
+    let total = targets.len();
+    let mut results = futures_util::stream::iter(targets.into_iter().map(|t| async move {
+        let icon = fetch_icon(
+            &t.url,
+            t.site_url.as_deref(),
+            t.icon_url.as_deref(),
+            t.logo_url.as_deref(),
+        )
+        .await;
+        (t.id, icon)
+    }))
+    .buffer_unordered(PARALLEL);
+    let mut found = 0;
+    while let Some((id, icon)) = results.next().await {
+        match with_db(state, |c| db::set_icon(c, id, icon.as_deref())) {
+            Ok(()) => found += usize::from(icon.is_some()),
+            Err(e) => log::warn!("icon {id}: {e}"),
+        }
+    }
+    log::info!("icons: {found} of {total} feeds");
+    if found > 0 {
+        let _ = app.emit("icons-changed", ());
+    }
 }
 
 // ------------------------------------------------------------------ OPML

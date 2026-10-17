@@ -15,6 +15,8 @@ import { withKey } from "../lib/shortcuts";
 import { dragRegion } from "../lib/titleBar";
 import { useStore, viewTitle } from "../store";
 import { commandItem, ContextMenu, type MenuState } from "./ContextMenu";
+import { FeedIcon } from "./FeedIcon";
+import { ResizeHandle, usePaneWidths } from "./ResizeHandle";
 
 const ROW = 92;
 
@@ -144,6 +146,7 @@ export function ArticleList() {
   const select = useStore((s) => s.select);
   const title = useStore(viewTitle);
   const canMarkAll = useStore((s) => s.articles.some((a) => !a.read));
+  const width = usePaneWidths().list;
   const scroller = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<MenuState>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -191,7 +194,7 @@ export function ArticleList() {
   };
 
   return (
-    <section className="flex h-full w-[380px] shrink-0 flex-col border-r border-line">
+    <section className="relative flex h-full shrink-0 flex-col border-r border-line" style={{ width }}>
       <header {...dragRegion(true)} className="shrink-0 border-b border-line px-3" style={{ paddingTop: "max(calc(var(--titlebar) - 30px), 8px)" }}>
         <div className="flex h-7 items-center gap-2">
           <h1 className="min-w-0 flex-1 truncate text-[14px] font-semibold">{title}</h1>
@@ -235,6 +238,7 @@ export function ArticleList() {
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.read ? "bg-transparent" : "bg-accent"}`}
                     aria-label={a.read ? undefined : "未読"}
                   />
+                  <FeedIcon feedId={a.feedId} size={12} />
                   <span className="min-w-0 flex-1 truncate">{a.feedTitle}</span>
                   {a.later && <Clock size={11} className="shrink-0 text-accent" aria-label="あとで読む" />}
                   {a.starred && <Star size={11} className="shrink-0 fill-current text-star" />}
@@ -248,6 +252,7 @@ export function ArticleList() {
         </div>
       </div>
       <ContextMenu menu={menu} onClose={closeMenu} />
+      <ResizeHandle pane="list" />
     </section>
   );
 }

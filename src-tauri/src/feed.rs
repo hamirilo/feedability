@@ -11,6 +11,10 @@ use feed_rs::model::{Entry, Feed};
 pub struct ParsedFeed {
     pub title: Option<String>,
     pub site_url: Option<String>,
+    /// The feed's own icon (Atom `<icon>`) and logo (RSS `<image>`, Atom
+    /// `<logo>`), absolute http(s) URLs (docs/FAVICON.md).
+    pub icon: Option<String>,
+    pub logo: Option<String>,
     pub articles: Vec<NewArticle>,
 }
 
@@ -25,7 +29,7 @@ pub fn parse(bytes: &[u8], url: &str) -> Result<ParsedFeed, String> {
         .build()
         .parse(bytes)
         .map_err(|e| format!("フィードとして読めませんでした（{e}）"))?;
-    Ok(from_model(feed))
+    Ok(from_model(feed, url))
 }
 
 /// An id for an entry without one, the same on every refresh: from its link
@@ -57,7 +61,7 @@ fn stable_hash(parts: &[&str]) -> String {
     format!("text:{h:016x}")
 }
 
-fn from_model(feed: Feed) -> ParsedFeed {
+fn from_model(feed: Feed, base: &str) -> ParsedFeed {
     let site_url = feed
         .links
         .iter()
@@ -69,8 +73,20 @@ fn from_model(feed: Feed) -> ParsedFeed {
             .map(|t| plain_text(&t.content))
             .filter(|t| !t.is_empty()),
         site_url,
+        icon: feed.icon.and_then(|i| absolute(base, &i.uri)),
+        logo: feed.logo.and_then(|i| absolute(base, &i.uri)),
         articles: feed.entries.into_iter().map(article).collect(),
     }
+}
+
+/// `href` resolved against `base`, if it is then an http(s) URL.
+fn absolute(base: &str, href: &str) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() {
+        return None;
+    }
+    let u = url::Url::parse(base).ok()?.join(href).ok()?;
+    matches!(u.scheme(), "http" | "https").then(|| u.to_string())
 }
 
 fn article(e: Entry) -> NewArticle {
@@ -239,25 +255,32 @@ pub fn looks_like_html(bytes: &[u8]) -> bool {
     head.contains("<!doctype html") || head.contains("<html")
 }
 
-/// The feeds a web page points to with `<link rel="alternate">`, resolved
-/// against the page's URL, in the page's order.
-pub fn discover(html: &[u8], page_url: &str) -> Vec<String> {
-    let Ok(base) = url::Url::parse(page_url) else {
-        return Vec::new();
-    };
+/// The attributes of every `<link>` in a page's start, in the page's order.
+fn link_tags(html: &[u8]) -> Vec<Vec<(String, String)>> {
     // The <head> is enough, and the tags are ASCII whatever the page's encoding.
     let text = String::from_utf8_lossy(&html[..html.len().min(512 * 1024)]);
     let lower = text.to_ascii_lowercase();
-    let mut found = Vec::new();
+    let mut out = Vec::new();
     let mut from = 0;
     while let Some(i) = lower[from..].find("<link") {
         let start = from + i;
         let Some(len) = lower[start..].find('>') else {
             break;
         };
-        let tag = &text[start..start + len];
+        out.push(attributes(&text[start..start + len]));
         from = start + len;
-        let attrs = attributes(tag);
+    }
+    out
+}
+
+/// The feeds a web page points to with `<link rel="alternate">`, resolved
+/// against the page's URL, in the page's order.
+pub fn discover(html: &[u8], page_url: &str) -> Vec<String> {
+    let Ok(base) = url::Url::parse(page_url) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for attrs in link_tags(html) {
         let get = |k: &str| attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         let rel_alternate = get("rel").is_some_and(|r| {
             r.split_whitespace()
@@ -278,6 +301,57 @@ pub fn discover(html: &[u8], page_url: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// The icons a web page names with `<link rel="icon">` / `"shortcut icon"` /
+/// `"apple-touch-icon"`, as absolute http(s) URLs, best first: an `icon` with
+/// no `sizes` or a 16x16 / 32x32 one (small, what a list row needs), then any
+/// other `icon`, then the apple-touch-icons. In the page's order within each.
+/// SVG is left out: the app doesn't show it (fetch.rs `image_type`).
+pub fn icon_links(html: &[u8], page_url: &str) -> Vec<String> {
+    let Ok(base) = url::Url::parse(page_url) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u8, String)> = Vec::new();
+    for attrs in link_tags(html) {
+        let get = |k: &str| attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        let rel = get("rel").unwrap_or_default().to_ascii_lowercase();
+        let has = |w: &str| rel.split_whitespace().any(|r| r == w);
+        let is_icon = has("icon");
+        let is_apple = has("apple-touch-icon") || has("apple-touch-icon-precomposed");
+        if !is_icon && !is_apple {
+            continue;
+        }
+        let Some(href) = get("href") else { continue };
+        let Ok(u) = base.join(href.trim()) else {
+            continue;
+        };
+        if !matches!(u.scheme(), "http" | "https") {
+            continue;
+        }
+        let svg = get("type").is_some_and(|t| t.to_ascii_lowercase().contains("svg"))
+            || u.path().to_ascii_lowercase().ends_with(".svg");
+        if svg {
+            continue;
+        }
+        let sizes = get("sizes").unwrap_or_default().to_ascii_lowercase();
+        let small = sizes.split_whitespace().next().is_none()
+            || sizes
+                .split_whitespace()
+                .any(|s| s == "16x16" || s == "32x32");
+        let rank = match (is_icon, small) {
+            (true, true) => 0,
+            (true, false) => 1,
+            _ => 2,
+        };
+        let url = u.to_string();
+        if !found.iter().any(|(_, f)| *f == url) {
+            found.push((rank, url));
+        }
+    }
+    // Stable: the page's order is kept within a rank.
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().map(|(_, u)| u).collect()
 }
 
 /// The attributes of a tag (`<link a="1" b='2' c=3>`), names lowercased.
@@ -422,6 +496,45 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_feeds_icon_and_logo() {
+        let atom = r#"<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>With icons</title>
+  <id>urn:icons</id>
+  <updated>2025-10-01T00:00:00Z</updated>
+  <icon>https://atom.example.com/icon.png</icon>
+  <logo>/logo.png</logo>
+</feed>"#;
+        let f = parse(atom.as_bytes(), "https://atom.example.com/feed.xml").unwrap();
+        assert_eq!(f.icon.as_deref(), Some("https://atom.example.com/icon.png"));
+        assert_eq!(f.logo.as_deref(), Some("https://atom.example.com/logo.png"));
+
+        let rss = r#"<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <title>Blog</title>
+  <link>https://blog.example.com/</link>
+  <image><url>https://blog.example.com/logo.gif</url><title>Blog</title><link>https://blog.example.com/</link></image>
+</channel></rss>"#;
+        let f = parse(rss.as_bytes(), "https://blog.example.com/feed").unwrap();
+        assert_eq!(f.logo.as_deref(), Some("https://blog.example.com/logo.gif"));
+        assert_eq!(f.icon, None);
+
+        // None declared: both empty.
+        let f = parse(RSS.as_bytes(), "https://blog.example.com/feed").unwrap();
+        assert_eq!((f.icon, f.logo), (None, None));
+    }
+
+    #[test]
+    fn resolves_only_http_urls() {
+        assert_eq!(
+            absolute("https://a.example/blog/feed", "../i.png").as_deref(),
+            Some("https://a.example/i.png")
+        );
+        assert_eq!(absolute("https://a.example/", "data:image/png;base64,AA=="), None);
+        assert_eq!(absolute("https://a.example/", "  "), None);
+    }
+
+    #[test]
     fn reads_shift_jis() {
         let body = shift_jis("<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><rss version=\"2.0\"><channel><title>日本語</title><item><title>記事</title><guid>1</guid></item></channel></rss>");
         let f = parse(&body, "https://example.jp/rss").unwrap();
@@ -479,5 +592,33 @@ mod tests {
             ]
         );
         assert!(discover(b"<html></html>", "https://site.example/").is_empty());
+    }
+
+    #[test]
+    fn lists_a_pages_icons_best_first() {
+        let html = br#"<!DOCTYPE html><html><head>
+            <link rel="apple-touch-icon" href="/apple.png">
+            <link rel="icon" sizes="192x192" href="/big.png">
+            <link rel="Shortcut Icon" href="/favicon.ico">
+            <link rel="icon" type="image/svg+xml" href="/icon.svg">
+            <link rel="icon" href="/vector.svg?v=2">
+            <link rel="icon" sizes="16x16 32x32" href="https://cdn.example/small.png">
+            <link rel="stylesheet" href="/s.css">
+            <link rel="mask-icon" href="/mask.png">
+            <link rel="icon" href="javascript:alert(1)">
+            <link rel="icon" href="/favicon.ico">
+            <link rel="icon">
+        </head></html>"#;
+        assert_eq!(
+            icon_links(html, "https://site.example/blog/"),
+            [
+                "https://site.example/favicon.ico",
+                "https://cdn.example/small.png",
+                "https://site.example/big.png",
+                "https://site.example/apple.png",
+            ]
+        );
+        assert!(icon_links(b"<html></html>", "https://site.example/").is_empty());
+        assert!(icon_links(html, "not a url").is_empty());
     }
 }

@@ -39,6 +39,25 @@ export interface Sidebar {
   later: number;
 }
 
+/** What the feed-info dialog shows (db.rs `FeedInfo`). */
+export interface FeedInfo {
+  id: number;
+  /** The name shown: the user's, else the feed's own. */
+  title: string;
+  /** The feed's own title. */
+  originalTitle: string;
+  customTitle: string | null;
+  url: string;
+  siteUrl: string | null;
+  folderId: number | null;
+  addedAt: number;
+  fetchedAt: number | null;
+  /** Why the last refresh failed; null when it worked. */
+  error: string | null;
+  articles: number;
+  unread: number;
+}
+
 export interface ArticleQuery {
   view: View;
   unreadOnly: boolean;
@@ -110,6 +129,12 @@ export interface RefreshProgress {
   total: number;
 }
 
+export interface FeedIcon {
+  feedId: number;
+  /** A data: URL. */
+  icon: string;
+}
+
 export interface Imported {
   feedIds: number[];
   skipped: number;
@@ -128,6 +153,9 @@ export const api = {
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 
   addFeed: (url: string, folderId: number | null) => invoke<Added>("add_feed", { url, folderId }),
+  getFeedInfo: (id: number) => invoke<FeedInfo>("get_feed_info", { id }),
+  /** Checks the new URL (a page that names its feed works too) before it changes anything. */
+  changeFeedUrl: (id: number, url: string) => invoke<FeedInfo>("change_feed_url", { id, url }),
   renameFeed: (id: number, title: string) => invoke<void>("rename_feed", { id, title }),
   moveFeed: (id: number, folderId: number | null) => invoke<void>("move_feed", { id, folderId }),
   deleteFeed: (id: number) => invoke<void>("delete_feed", { id }),
@@ -140,6 +168,10 @@ export const api = {
   cancelRefresh: () => invoke<void>("cancel_refresh"),
   onRefreshProgress: (cb: (p: RefreshProgress) => void): Promise<UnlistenFn> =>
     listen<RefreshProgress>("refresh-progress", (e) => cb(e.payload)),
+
+  /** The icons found so far; new ones: `onIconsChanged`. */
+  feedIcons: () => invoke<FeedIcon[]>("feed_icons"),
+  onIconsChanged: (cb: () => void): Promise<UnlistenFn> => listen("icons-changed", () => cb()),
 
   importOpml: (path: string) => invoke<Imported>("import_opml", { path }),
   exportOpml: (path: string) => invoke<number>("export_opml", { path }),

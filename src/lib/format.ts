@@ -23,6 +23,12 @@ export function fullDate(ms: number): string {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** A day: "2026年10月17日". */
+export function dayOnly(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
 /** "3 分前" for the sidebar's last refresh. */
 export function ago(ms: number, now = Date.now()): string {
   const min = Math.floor((now - ms) / 60_000);

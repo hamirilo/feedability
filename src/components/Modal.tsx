@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { composing } from "../lib/ime";
 
 /**
@@ -80,4 +80,32 @@ export function Buttons({
       </button>
     </div>
   );
+}
+
+/** Submits on Enter, except the Enter that confirms an IME conversion. */
+export function useSubmit(run: () => Promise<void>) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    run().then(
+      () => setBusy(false),
+      (err) => {
+        setBusy(false);
+        setError(String(err));
+      },
+    );
+  };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && composing(e)) e.preventDefault();
+  };
+  return { busy, error, onSubmit, onKeyDown };
+}
+
+export function ErrorLine({ error }: { error: string | null }) {
+  // The line is always there, so an error doesn't push the buttons down.
+  return <p className="mt-2 min-h-[1.25rem] text-xs text-danger">{error}</p>;
 }

@@ -17,6 +17,7 @@ import { warn } from "../lib/log";
 import { withKey } from "../lib/shortcuts";
 import { dragRegion } from "../lib/titleBar";
 import { useStore } from "../store";
+import { FeedIcon } from "./FeedIcon";
 
 /** Images fetched this session, by URL (the same logo in every article). */
 const images = new Map<string, Promise<string>>();
@@ -152,7 +153,10 @@ export function Reader() {
       <div id="reader-scroll" ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         {article ? (
           <article className="mx-auto max-w-[720px] px-8 pt-8 pb-24">
-            <div className="text-xs text-dim">{article.feedTitle}</div>
+            <div className="flex items-center gap-1.5 text-xs text-dim">
+              <FeedIcon feedId={article.feedId} size={12} />
+              <span className="min-w-0 truncate">{article.feedTitle}</span>
+            </div>
             <h1 className="mt-1 text-[22px] leading-snug font-bold select-text">
               {article.url ? (
                 <a
