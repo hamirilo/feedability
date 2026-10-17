@@ -21,7 +21,7 @@ v0.1.0 のあとの機能追加の計画。優先するのは **読む体験** �
 | 2 | 既読にするタイミングの設定 | 読む | S | — |
 | 3 | 一覧のレイアウト（標準・コンパクト・画像付き） | 読む | M | — |
 | 4 | 全文取得（要約だけのフィードの本文をページから取る） | 読む | L | 依存の追加、ADR-0001 の見直し |
-| 5 | 記事を stockroom へ送る（[STOCKROOM.md](STOCKROOM.md)） | 連携 | S + M | stockroom 側の受け口、[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md) の採用 |
+| 5 | 記事を stockroom へ送る（[STOCKROOM.md](STOCKROOM.md)） | 連携 | S + M | — （決定済み：[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)、`htmd`、stockroom の受け口） |
 | 6 | `feed:` リンクと共有メニューから購読 | 連携 | M | capabilities の追加（deep link） |
 | 7 | ブラウザ拡張から購読・記事を送る | 連携 | L | 待ち受けポート |
 | 8 | Claude（MCP）から読む・整理する | 連携 | L | 待ち受けポート、AI に公開する操作の範囲 |
@@ -77,7 +77,7 @@ Feedability はフロー、stockroom はストック。取っておきたい記�
 - 段階 1（S）：記事を **Markdown でコピー**。stockroom に貼り付けて使い方を確かめる。stockroom 側の変更は要らない
 - 段階 2（M）：**stockroom に送る**（右クリック・メニュー・本文の帯）。stockroom のブラウザ拡張の受付（127.0.0.1:41620 の `POST /import`）に、Rust の `stockroom.rs` から送る。送り先のフォルダとタグは設定で選ぶ
 - stockroom 側の受け口：拡張以外のアプリも接続の許可（`/pair`）を求められるようにする。stockroom の `docs/FROM_APPS.md`。URL の種類は待たない
-- **人の判断が要る**：127.0.0.1 の stockroom への通信（[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)、いまは提案）、HTML から Markdown への変換の crate の追加
+- **決定済み**（2026-10-17）：127.0.0.1 の stockroom への通信（[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md) を採用）、HTML から Markdown への変換は `htmd`、stockroom の受付を拡張以外のアプリにも開く（トークンは拡張と共通）
 - stockroom が動いていないときは「stockroom を起動してください」とだけ言う。Feedability は stockroom のデータを直接触らない
 
 ## フェーズ 6：`feed:` リンクと共有メニューから購読（M）
