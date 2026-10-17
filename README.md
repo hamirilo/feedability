@@ -7,6 +7,9 @@ RSS / Atom のフィードを購読して読む、ローカルのフィードリ
 
 - **購読**：フィードの URL か、サイトの URL を入れるだけ（ページからフィードを探す）。RSS 0.9x / 1.0 / 2.0、Atom、JSON Feed。Shift_JIS や EUC-JP のフィードもそのまま読める
 - **整理**：フォルダに分ける。名前の変更、フォルダへの移動、購読をやめる（右クリック、またはメニューの「フィード」）
+- **フィードの情報**：⌘I。URL・サイト・最後に更新した日時・記事の数・更新できなかった理由の全文。URL の付け替えもここ（[docs/FEED_INFO.md](docs/FEED_INFO.md)）
+- **アイコン**：サイドバーと一覧にフィードのアイコン（[docs/FAVICON.md](docs/FAVICON.md)）
+- **ペインの幅**：サイドバーと一覧の右端をドラッグして変える。ダブルクリックで既定に戻る（[docs/LAYOUT.md](docs/LAYOUT.md)）
 - **読む**：3 列（フィード / 記事の一覧 / 本文）。開いた記事は既読になる。未読のみ・すべての切り替え、スター、検索（タイトル・要約・フィード名、空白区切りですべてを含むもの）
 - **あとで読む**：L で入れておき、入れた順に読んでいく。読み終えて次へ移ると自動で外れる（[docs/LATER.md](docs/LATER.md)）。スターは自分で外すまで残る保存
 - **外観**：ライト / ダーク。既定は OS に合わせる（設定 › 外観。[docs/THEME.md](docs/THEME.md)）
@@ -22,6 +25,8 @@ RSS / Atom のフィードを購読して読む、ローカルのフィードリ
 |---|---|
 | J / ↓ | 次の記事 |
 | K / ↑ | 前の記事 |
+| N | 次の未読の記事（一覧に無ければ未読のある次のフィード） |
+| Shift+J / Shift+K | 次 / 前のフィード |
 | Space | 本文をスクロール（最後まで読んだら次の記事） |
 | M | 既読 / 未読の切り替え |
 | S | スターを付ける / 外す |
@@ -29,6 +34,7 @@ RSS / Atom のフィードを購読して読む、ローカルのフィードリ
 | V / Return | ブラウザで開く |
 | ⌘R | すべて更新 |
 | ⌘⇧R | 開いているフィードを更新 |
+| ⌘I | 開いているフィードの情報（URL の変更もここ） |
 | ⌘⇧A | 一覧をすべて既読にする |
 | ⌘U | 未読のみ表示の切り替え |
 | ⌘F | 検索 |
@@ -59,6 +65,7 @@ Windows は ⌘ → Ctrl、⌥ → Alt。1 文字のキーは検索欄などの�
 
 - 購読したフィード（追加するときは、入力したサイトのページも。フィードを探すため）
 - 記事の本文の画像。ウィンドウの中から外へは通信せず、アプリが取得して渡す（JPEG・PNG・GIF・WebP・AVIF・BMP・ICO。SVG は表示しない）
+- 購読したフィードのサイトのアイコン（フィード自身のアイコン → ページの `<link rel="icon">` → `/favicon.ico` → フィードのロゴの順。30 日に 1 回まで、256 KB まで、SVG は使わない。[docs/FAVICON.md](docs/FAVICON.md)）
 - アップデートの確認（GitHub Releases）
 
 プロキシは OS の設定（自動構成スクリプト（PAC）を含む）をそのまま使う。
@@ -122,7 +129,7 @@ src-tauri/
   src/opml.rs             OPML の読み書き
   src/proxy.rs            OS のプロキシ（PAC）の解決
   examples/fetch.rs       アプリなしでフィードを取得・解析
-docs/                     ARCHITECTURE.md、SETTINGS.md、THEME.md、LATER.md、STOCKROOM.md、ROADMAP.md
+docs/                     ARCHITECTURE.md、SETTINGS.md、THEME.md、LATER.md、LIST.md、LAYOUT.md、FEED_INFO.md、FAVICON.md、STOCKROOM.md、ROADMAP.md
 decisions/                project-context.md、ADR
 ```
 

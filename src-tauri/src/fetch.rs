@@ -2,7 +2,8 @@
 //!
 //! This is the app's one reach outside besides the updater (decisions/
 //! adr-0001-fetching-feeds.md): only URLs the user subscribed to, the feeds
-//! their pages point to, and the images inside their articles.
+//! their pages point to, the images inside their articles, and the icons of
+//! the feeds' sites.
 //!
 //! - Through the proxy the OS would use for that URL, PAC included (proxy.rs).
 //!   reqwest alone only knows fixed proxies and environment variables.
@@ -18,6 +19,10 @@ use std::time::{Duration, Instant};
 pub const MAX_FEED_BYTES: usize = 10 * 1024 * 1024;
 /// Images in articles; larger ones stay as links.
 pub const MAX_IMAGE_BYTES: usize = 15 * 1024 * 1024;
+/// A site's icon (a favicon is a few KB; 256 KB is generous).
+pub const MAX_ICON_BYTES: usize = 256 * 1024;
+/// A site's front page, read only for its `<link rel="icon">` tags.
+pub const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
 
 const USER_AGENT: &str = concat!(
     "Feedability/",
@@ -196,6 +201,13 @@ fn too_big(max: usize) -> String {
 
 pub const FEED_ACCEPT: &str =
     "application/rss+xml, application/atom+xml, application/feed+json, application/xml;q=0.9, text/xml;q=0.9, text/html;q=0.5, */*;q=0.1";
+
+/// For a site's icon: no SVG (`image_type` drops it anyway).
+pub const ICON_ACCEPT: &str =
+    "image/png, image/x-icon, image/vnd.microsoft.icon, image/webp, image/jpeg, image/gif, image/*;q=0.8, */*;q=0.1";
+
+/// For a site's page, where a feed would be the wrong answer.
+pub const PAGE_ACCEPT: &str = "text/html, application/xhtml+xml;q=0.9, */*;q=0.1";
 
 /// The image's type from its first bytes. The server's Content-Type isn't
 /// trusted (security standard §4): only formats the WebView decodes as a

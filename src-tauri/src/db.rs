@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -112,6 +112,20 @@ fn migrate(conn: &Connection) -> DbResult<()> {
             "BEGIN;
              ALTER TABLE articles ADD COLUMN later_at INTEGER;
              CREATE INDEX IF NOT EXISTS articles_later ON articles(later_at) WHERE later_at IS NOT NULL;
+             COMMIT;",
+        )?;
+    }
+    if version < 3 {
+        // Feed icons (docs/FAVICON.md): `icon` is a data: URL; `icon_checked_at`
+        // is when it was last looked for (NULL: never), so a site without one
+        // isn't asked at every refresh; `icon_url` / `logo_url` are the feed's
+        // own declared icon and logo from its last parse. An older app ignores them.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE feeds ADD COLUMN icon TEXT;
+             ALTER TABLE feeds ADD COLUMN icon_checked_at INTEGER;
+             ALTER TABLE feeds ADD COLUMN icon_url TEXT;
+             ALTER TABLE feeds ADD COLUMN logo_url TEXT;
              COMMIT;",
         )?;
     }
@@ -375,6 +389,134 @@ pub fn feed_unchanged(conn: &Connection, id: i64) -> DbResult<()> {
     Ok(())
 }
 
+/// Everything the feed-info dialog shows (docs/FEED_INFO.md).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedInfo {
+    pub id: i64,
+    /// The name shown: the user's, else the feed's own.
+    pub title: String,
+    /// The feed's own title.
+    pub original_title: String,
+    pub custom_title: Option<String>,
+    pub url: String,
+    pub site_url: Option<String>,
+    pub folder_id: Option<i64>,
+    pub added_at: i64,
+    pub fetched_at: Option<i64>,
+    pub error: Option<String>,
+    pub articles: i64,
+    pub unread: i64,
+}
+
+pub fn feed_info(conn: &Connection, id: i64) -> DbResult<Option<FeedInfo>> {
+    conn.query_row(
+        "SELECT f.id, COALESCE(f.custom_title, f.title), f.title, f.custom_title, f.url, f.site_url,
+                f.folder_id, f.added_at, f.fetched_at, f.error,
+                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id),
+                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0)
+         FROM feeds f WHERE f.id = ?1",
+        [id],
+        |r| {
+            Ok(FeedInfo {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                original_title: r.get(2)?,
+                custom_title: r.get(3)?,
+                url: r.get(4)?,
+                site_url: r.get(5)?,
+                folder_id: r.get(6)?,
+                added_at: r.get(7)?,
+                fetched_at: r.get(8)?,
+                error: r.get(9)?,
+                articles: r.get(10)?,
+                unread: r.get(11)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Points the feed at a new URL. What belongs to the old address is cleared:
+/// the conditional-request headers, the error, the site (the new feed names
+/// its own, or has none), the icon and where it came from (it is looked up
+/// again). The user's name and the articles stay. Fails
+/// on a URL another feed has (`UNIQUE`). False: there is no such feed.
+pub fn change_feed_url(conn: &Connection, id: i64, url: &str) -> DbResult<bool> {
+    let n = conn.execute(
+        "UPDATE feeds SET url = ?2, etag = NULL, last_modified = NULL, error = NULL, site_url = NULL,
+                          icon = NULL, icon_checked_at = NULL, icon_url = NULL, logo_url = NULL
+         WHERE id = ?1",
+        params![id, url],
+    )?;
+    Ok(n > 0)
+}
+
+// ------------------------------------------------------------------ icons
+
+/// A feed to look an icon up for.
+#[derive(Clone, Debug)]
+pub struct IconTarget {
+    pub id: i64,
+    pub url: String,
+    pub site_url: Option<String>,
+    /// The icon and logo the feed declared when last parsed.
+    pub icon_url: Option<String>,
+    pub logo_url: Option<String>,
+}
+
+/// What the feed names as its icon and logo, kept on every successful parse
+/// (including none) so the lookup can run later without fetching the feed.
+pub fn set_icon_urls(
+    conn: &Connection,
+    id: i64,
+    icon_url: Option<&str>,
+    logo_url: Option<&str>,
+) -> DbResult<()> {
+    conn.execute(
+        "UPDATE feeds SET icon_url = ?2, logo_url = ?3 WHERE id = ?1",
+        params![id, icon_url, logo_url],
+    )?;
+    Ok(())
+}
+
+/// Feeds never looked up, or not since `older_than_ms`.
+pub fn feeds_needing_icon(conn: &Connection, older_than_ms: i64) -> DbResult<Vec<IconTarget>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url, site_url, icon_url, logo_url FROM feeds
+         WHERE icon_checked_at IS NULL OR icon_checked_at < ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map([older_than_ms], |r| {
+        Ok(IconTarget {
+            id: r.get(0)?,
+            url: r.get(1)?,
+            site_url: r.get(2)?,
+            icon_url: r.get(3)?,
+            logo_url: r.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// A lookup's result for the feed at `url`. The check is recorded either way;
+/// `None` (nothing found, or the site didn't answer) keeps the icon the feed
+/// already had. Nothing is written when the feed has moved to another URL
+/// meanwhile: the result is the old site's, and the move left the check pending.
+pub fn set_icon(conn: &Connection, id: i64, url: &str, icon: Option<&str>) -> DbResult<()> {
+    conn.execute(
+        "UPDATE feeds SET icon = COALESCE(?3, icon), icon_checked_at = ?4 WHERE id = ?1 AND url = ?2",
+        params![id, url, icon, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// Every feed's icon (a data: URL), for the sidebar and the list.
+pub fn icons(conn: &Connection) -> DbResult<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT id, icon FROM feeds WHERE icon IS NOT NULL ORDER BY id")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct OpmlFeed {
@@ -514,6 +656,9 @@ pub struct ArticleQuery {
     /// with 未読のみ on doesn't pull it out from under the user.
     #[serde(default)]
     pub keep: Option<i64>,
+    /// Oldest first, for the views by date. あとで読む keeps the order it was filled in.
+    #[serde(default)]
+    pub oldest_first: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -592,7 +737,13 @@ pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<Artic
          FROM articles a JOIN feeds f ON f.id = a.feed_id
          WHERE {sql_filter}
          ORDER BY {order}",
-        order = if q.view == View::Later { "a.later_at, a.id" } else { "a.published DESC, a.id DESC" }
+        order = if q.view == View::Later {
+            "a.later_at, a.id"
+        } else if q.oldest_first {
+            "a.published ASC, a.id ASC"
+        } else {
+            "a.published DESC, a.id DESC"
+        }
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args), |r| {
@@ -732,6 +883,7 @@ mod tests {
             unread_only: false,
             search: String::new(),
             keep: None,
+            oldest_first: false,
         }
     }
 
@@ -790,6 +942,7 @@ mod tests {
             unread_only,
             search: search.into(),
             keep,
+            oldest_first: false,
         };
         assert_eq!(
             query_articles(&conn, &q(View::Folder { id: folder }, false, "", None))
@@ -909,10 +1062,68 @@ mod tests {
     }
 
     #[test]
+    fn oldest_first_reverses_the_order_but_not_in_later() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        store_articles(
+            &mut conn,
+            feed,
+            &[
+                art("a", "A", 1000),
+                art("b", "B", 2000),
+                art("c", "C", 3000),
+            ],
+        )
+        .unwrap();
+        fn titles(conn: &Connection, q: &ArticleQuery) -> Vec<String> {
+            query_articles(conn, q)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.title)
+                .collect()
+        }
+        let feed_q = ArticleQuery {
+            view: View::Feed { id: feed },
+            ..all()
+        };
+        assert_eq!(titles(&conn, &feed_q), ["C", "B", "A"]);
+        let oldest = ArticleQuery {
+            oldest_first: true,
+            ..feed_q
+        };
+        assert_eq!(titles(&conn, &oldest), ["A", "B", "C"]);
+
+        // あとで読む stays in the order they went in.
+        let id = |t: &str| {
+            query_articles(&conn, &all())
+                .unwrap()
+                .into_iter()
+                .find(|r| r.title == t)
+                .unwrap()
+                .id
+        };
+        let (a, c) = (id("A"), id("C"));
+        set_later(&mut conn, &[c], true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        set_later(&mut conn, &[a], true).unwrap();
+        for oldest_first in [false, true] {
+            let later = ArticleQuery {
+                view: View::Later,
+                oldest_first,
+                ..all()
+            };
+            assert_eq!(titles(&conn, &later), ["C", "A"]);
+        }
+    }
+
+    #[test]
     fn migrates_a_version_1_file() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE articles (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
+            "CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+               custom_title TEXT, site_url TEXT, folder_id INTEGER, added_at INTEGER NOT NULL,
+               fetched_at INTEGER, error TEXT, etag TEXT, last_modified TEXT);
+             CREATE TABLE articles (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
                url TEXT, title TEXT NOT NULL, author TEXT, summary TEXT NOT NULL DEFAULT '',
                content TEXT NOT NULL DEFAULT '', published INTEGER NOT NULL, added_at INTEGER NOT NULL,
                seen_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, starred INTEGER NOT NULL DEFAULT 0,
@@ -924,9 +1135,39 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, VERSION);
         conn.execute("UPDATE articles SET later_at = 1", [])
             .unwrap();
+        conn.execute("UPDATE feeds SET icon = 'x', icon_checked_at = 1", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn migrates_a_version_2_file() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+               custom_title TEXT, site_url TEXT, folder_id INTEGER, added_at INTEGER NOT NULL,
+               fetched_at INTEGER, error TEXT, etag TEXT, last_modified TEXT);
+             INSERT INTO feeds (id, url, title, added_at) VALUES (1, 'https://a.example/feed', 'A', 0);
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+        setup(&conn).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+        // The existing feed has never been looked up.
+        assert_eq!(feeds_needing_icon(&conn, 0).unwrap().len(), 1);
+        set_icon(
+            &conn,
+            1,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
+        assert_eq!(icons(&conn).unwrap().len(), 1);
     }
 
     #[test]
@@ -1037,6 +1278,149 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM articles", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "articles go with their feed");
+    }
+
+    #[test]
+    fn feed_info_counts_and_names() {
+        let mut conn = open_in_memory().unwrap();
+        assert!(feed_info(&conn, 1).unwrap().is_none());
+        let feed = add_feed(
+            &conn,
+            "https://example.com/feed",
+            "Example",
+            Some("https://example.com/"),
+            None,
+        )
+        .unwrap();
+        store_articles(&mut conn, feed, &[art("1", "one", 1), art("2", "two", 2)]).unwrap();
+        set_read(&mut conn, &[1], true).unwrap();
+        feed_failed(&conn, feed, "見つかりません（HTTP 404）").unwrap();
+        rename_feed(&conn, feed, "私の名前").unwrap();
+        let info = feed_info(&conn, feed).unwrap().unwrap();
+        assert_eq!(info.title, "私の名前");
+        assert_eq!(info.original_title, "Example");
+        assert_eq!(info.custom_title.as_deref(), Some("私の名前"));
+        assert_eq!(info.url, "https://example.com/feed");
+        assert_eq!(info.site_url.as_deref(), Some("https://example.com/"));
+        assert_eq!(info.error.as_deref(), Some("見つかりません（HTTP 404）"));
+        assert_eq!((info.articles, info.unread), (2, 1));
+        assert!(info.fetched_at.is_some());
+        assert!(info.added_at > 0);
+        rename_feed(&conn, feed, "").unwrap();
+        assert_eq!(feed_info(&conn, feed).unwrap().unwrap().title, "Example");
+    }
+
+    #[test]
+    fn changing_the_url_clears_what_belonged_to_the_old_one() {
+        let mut conn = open_in_memory().unwrap();
+        let a = add_feed(
+            &conn,
+            "https://a.example/feed",
+            "A",
+            Some("https://a.example/"),
+            None,
+        )
+        .unwrap();
+        let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
+        store_articles(&mut conn, a, &[art("1", "one", 1)]).unwrap();
+        rename_feed(&conn, a, "私の名前").unwrap();
+        feed_fetched(
+            &conn,
+            a,
+            None,
+            None,
+            Some("\"e1\""),
+            Some("Mon, 01 Jan 2024"),
+        )
+        .unwrap();
+        set_icon_urls(&conn, a, Some("https://a.example/icon.png"), None).unwrap();
+        set_icon(
+            &conn,
+            a,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
+        feed_failed(&conn, a, "見つかりません（HTTP 404）").unwrap();
+
+        // Another feed's URL: refused, and nothing changed.
+        assert!(change_feed_url(&conn, a, "https://b.example/feed").is_err());
+        assert_eq!(
+            feed_info(&conn, a).unwrap().unwrap().url,
+            "https://a.example/feed"
+        );
+
+        assert!(change_feed_url(&conn, a, "https://a.example/new.xml").unwrap());
+        let info = feed_info(&conn, a).unwrap().unwrap();
+        assert_eq!(info.url, "https://a.example/new.xml");
+        assert_eq!(info.title, "私の名前", "the user's name stays");
+        assert_eq!(info.original_title, "A");
+        assert_eq!(info.error, None);
+        assert_eq!(info.site_url, None, "the old site goes with the old URL");
+        assert_eq!(info.articles, 1, "articles stay");
+        let t = feed_targets(&conn, Some(&[a][..])).unwrap().remove(0);
+        assert_eq!((t.etag, t.last_modified), (None, None));
+        // The icon is looked up again.
+        assert!(icons(&conn).unwrap().is_empty());
+        let needing = feeds_needing_icon(&conn, 0).unwrap();
+        assert!(needing.iter().any(|t| t.id == a && t.icon_url.is_none()));
+        // A lookup for the old URL finishing late writes nothing, and the new
+        // site's icon is still to be looked up.
+        set_icon(
+            &conn,
+            a,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
+        assert!(icons(&conn).unwrap().is_empty());
+        let needing = feeds_needing_icon(&conn, now_ms() - 86_400_000).unwrap();
+        assert!(needing.iter().any(|t| t.id == a));
+
+        // The same feed again is its own URL, not a conflict with itself.
+        assert!(change_feed_url(&conn, a, "https://a.example/new.xml").unwrap());
+        assert!(!change_feed_url(&conn, 999, "https://c.example/feed").unwrap());
+        assert!(feed_info(&conn, b).unwrap().is_some());
+    }
+
+    #[test]
+    fn icons_are_looked_up_once_in_a_while() {
+        let conn = open_in_memory().unwrap();
+        let a = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
+        let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
+        set_icon_urls(
+            &conn,
+            a,
+            Some("https://a.example/i.png"),
+            Some("https://a.example/l.png"),
+        )
+        .unwrap();
+        let day = 86_400_000;
+        let cutoff = now_ms() - 30 * day;
+        let todo = feeds_needing_icon(&conn, cutoff).unwrap();
+        assert_eq!(todo.iter().map(|t| t.id).collect::<Vec<_>>(), [a, b]);
+        assert_eq!(todo[0].icon_url.as_deref(), Some("https://a.example/i.png"));
+        assert_eq!(todo[0].logo_url.as_deref(), Some("https://a.example/l.png"));
+
+        set_icon(
+            &conn,
+            a,
+            "https://a.example/feed",
+            Some("data:image/png;base64,AA=="),
+        )
+        .unwrap();
+        // Nothing found still counts as a check, and keeps what was there.
+        set_icon(&conn, b, "https://b.example/feed", None).unwrap();
+        assert!(feeds_needing_icon(&conn, cutoff).unwrap().is_empty());
+        assert_eq!(
+            icons(&conn).unwrap(),
+            [(a, "data:image/png;base64,AA==".to_string())]
+        );
+        set_icon(&conn, a, "https://a.example/feed", None).unwrap();
+        assert_eq!(icons(&conn).unwrap().len(), 1);
+        // Thirty days on, both are due again.
+        let later = now_ms() + day;
+        assert_eq!(feeds_needing_icon(&conn, later).unwrap().len(), 2);
     }
 
     #[test]

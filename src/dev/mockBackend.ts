@@ -10,6 +10,8 @@ import type {
   Article,
   ArticleQuery,
   ArticleRow,
+  FeedIcon,
+  FeedInfo,
   FeedRow,
   FolderRow,
   Imported,
@@ -18,7 +20,13 @@ import type {
 } from "../lib/api";
 import { filtersUnread } from "../lib/api";
 
-type MockFeed = Omit<FeedRow, "unread">;
+type MockFeed = Omit<FeedRow, "unread"> & {
+  addedAt?: number;
+  /** The feed's own title, once the user has renamed it. */
+  original?: string;
+  /** Renamed by the user. */
+  custom?: boolean;
+};
 type MockArticle = Omit<ArticleRow, "feedTitle"> & {
   html: string;
   author: string | null;
@@ -34,14 +42,16 @@ const feeds: MockFeed[] = [
   { id: 1, title: "Rust Blog", url: "https://blog.rust-lang.org/feed.xml", siteUrl: "https://blog.rust-lang.org/", folderId: 1, error: null, fetchedAt: Date.now() - 600_000 },
   { id: 2, title: "Tauri", url: "https://tauri.app/blog/rss.xml", siteUrl: "https://tauri.app/", folderId: 1, error: null, fetchedAt: Date.now() - 600_000 },
   { id: 3, title: "世界のニュース", url: "https://news.example.jp/rss", siteUrl: "https://news.example.jp/", folderId: 2, error: null, fetchedAt: Date.now() - 600_000 },
-  { id: 4, title: "止まったブログ", url: "https://gone.example.com/feed", siteUrl: null, folderId: null, error: "見つかりません（HTTP 404）", fetchedAt: Date.now() - 3_600_000 },
+  { id: 4, title: "止まったブログ", url: "https://gone.example.com/feed", siteUrl: null, folderId: null, error: "見つかりません（HTTP 404）\nhttps://gone.example.com/feed は 3 日前から応答がありません。サイトが移転した場合は、フィードの情報から新しい URL に変更できます。", fetchedAt: Date.now() - 3_600_000 },
   { id: 5, title: "個人の日記", url: "https://diary.example.com/atom.xml", siteUrl: "https://diary.example.com/", folderId: null, error: null, fetchedAt: Date.now() - 600_000 },
 ];
 const articles: MockArticle[] = [];
+/** Icons already drawn, by feed id (a feed's title is its first letter). */
+const iconCache = new Map<number, string>();
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
-const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system" };
+const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false };
 
 const LOREM =
   "フィードリーダーは、購読したサイトの新しい記事をまとめて読むための道具です。サイトを一つずつ見に行かなくても、更新があったものだけが届きます。";
@@ -105,6 +115,33 @@ function sidebar(): Sidebar {
   };
 }
 
+/** A small PNG: a coloured rounded square with the feed's first letter, as a site's icon would be. */
+function drawIcon(id: number, title: string): string {
+  const cached = iconCache.get(id);
+  if (cached) return cached;
+  const size = 32;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = `hsl(${(id * 67) % 360} 55% 48%)`;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, size, size, 7);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 20px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(Array.from(title)[0] ?? "?", size / 2, size / 2 + 1);
+  const url = canvas.toDataURL("image/png");
+  iconCache.set(id, url);
+  return url;
+}
+
+/** The icon pass finishing a moment after a subscription or a URL change. */
+function iconsSoon() {
+  setTimeout(() => void emit("icons-changed", null), 1500);
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function refresh(ids: number[] | null): Promise<RefreshSummary> {
@@ -140,7 +177,11 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       return articles
         .filter((x) => matches(x, q) && (!unreadOnly || !x.read || x.id === q.keep))
         .sort((x, y) =>
-          q.view.kind === "later" ? x.laterAt! - y.laterAt! || x.id - y.id : y.published - x.published || y.id - x.id,
+          q.view.kind === "later"
+            ? x.laterAt! - y.laterAt! || x.id - y.id
+            : q.oldestFirst
+              ? x.published - y.published || x.id - y.id
+              : y.published - x.published || y.id - x.id,
         )
         .map(({ laterAt, ...x }): ArticleRow => ({
           ...x,
@@ -192,13 +233,56 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       if (url.includes("404")) throw "見つかりません（HTTP 404）";
       const id = ++feedSeq;
       const title = url.replace(/^https?:\/\//, "").split("/")[0];
-      feeds.push({ id, title, url, siteUrl: null, folderId: a.folderId, error: null, fetchedAt: Date.now() });
+      feeds.push({ id, title, url, siteUrl: null, folderId: a.folderId, error: null, fetchedAt: Date.now(), addedAt: Date.now() });
       for (let n = 0; n < 5; n++) addArticle(id, Date.now() - n * 3_600_000, n + 1);
+      iconsSoon();
       return { feedId: id, title, articles: 5 } satisfies Added;
     }
+    case "get_feed_info": {
+      const f = feeds.find((x) => x.id === a.id);
+      if (!f) throw "フィードが見つかりません";
+      const own = articles.filter((x) => x.feedId === f.id);
+      return {
+        id: f.id,
+        title: f.title,
+        originalTitle: f.original ?? f.title,
+        customTitle: f.custom ? f.title : null,
+        url: f.url,
+        siteUrl: f.siteUrl,
+        folderId: f.folderId,
+        addedAt: f.addedAt ?? Date.now() - 40 * 86_400_000,
+        fetchedAt: f.fetchedAt,
+        error: f.error,
+        articles: own.length,
+        unread: own.filter((x) => !x.read).length,
+      } satisfies FeedInfo;
+    }
+    case "change_feed_url": {
+      const f = feeds.find((x) => x.id === a.id);
+      if (!f) throw "フィードが見つかりません";
+      const url = String(a.url).trim();
+      if (!url) throw "URL を入力してください";
+      if (feeds.some((x) => x.id !== f.id && x.url === url)) throw "このフィードはすでに購読しています";
+      await sleep(800);
+      if (url.includes("fail")) throw "フィードとして読めませんでした（モックの失敗）";
+      f.url = url;
+      f.error = null;
+      f.fetchedAt = Date.now();
+      iconCache.delete(f.id);
+      iconsSoon();
+      return handle("get_feed_info", { id: f.id });
+    }
+    case "feed_icons":
+      // Most feeds have one; 個人の日記 has none, to show the fallback.
+      return feeds
+        .filter((f) => f.id !== 5)
+        .map((f) => ({ feedId: f.id, icon: drawIcon(f.id, f.original ?? f.title) })) satisfies FeedIcon[];
     case "rename_feed": {
       const f = feeds.find((x) => x.id === a.id)!;
-      f.title = a.title.trim() || f.url;
+      f.original ??= f.title;
+      const title = a.title.trim();
+      f.title = title || f.original;
+      f.custom = !!title;
       return null;
     }
     case "move_feed":

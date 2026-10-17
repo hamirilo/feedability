@@ -13,10 +13,12 @@ import {
   type Article,
   type ArticleQuery,
   type ArticleRow,
+  type FeedRow,
   type RefreshProgress,
   type Sidebar,
   type View,
 } from "./lib/api";
+import { PANE_DEFAULT, savedWidth, type Pane } from "./lib/layout";
 import { warn } from "./lib/log";
 import { applyTheme } from "./lib/theme";
 
@@ -59,7 +61,8 @@ export type Dialog =
       okLabel: string;
       onOk: (value: string) => Promise<void> | void;
     }
-  | { kind: "moveFeed"; feedId: number };
+  | { kind: "moveFeed"; feedId: number }
+  | { kind: "feedInfo"; feedId: number };
 
 export interface Updating {
   done: number;
@@ -71,12 +74,24 @@ export interface Updating {
 const PREFS_KEY = "feedability.prefs";
 interface Prefs {
   unreadOnly: boolean;
+  /** Oldest first (not in あとで読む, which keeps the order it was filled in). */
+  oldestFirst: boolean;
   collapsed: number[];
+  /** Pane widths in px (docs/LAYOUT.md). */
+  sidebarWidth: number;
+  listWidth: number;
 }
 function loadPrefs(): Prefs {
-  const fallback: Prefs = { unreadOnly: true, collapsed: [] };
+  const fallback: Prefs = {
+    unreadOnly: true,
+    oldestFirst: false,
+    collapsed: [],
+    sidebarWidth: PANE_DEFAULT.sidebar,
+    listWidth: PANE_DEFAULT.list,
+  };
   try {
-    return { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
+    const p = { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
+    return { ...p, sidebarWidth: savedWidth("sidebar", p.sidebarWidth), listWidth: savedWidth("list", p.listWidth) };
   } catch {
     return fallback;
   }
@@ -93,6 +108,10 @@ export interface State {
   sidebar: Sidebar;
   view: View;
   unreadOnly: boolean;
+  oldestFirst: boolean;
+  /** The saved pane widths; what is drawn is kept inside the window (usePaneWidths). */
+  sidebarWidth: number;
+  listWidth: number;
   search: string;
   articles: ArticleRow[];
   /** The list has been asked at least once (empty states wait for it). */
@@ -102,6 +121,8 @@ export interface State {
   /** Folders closed in the sidebar. */
   collapsed: Set<number>;
   settings: AppSettings;
+  /** Feed icons (data: URLs) by feed id; not part of the sidebar, which is asked again after every read. */
+  icons: Record<number, string>;
   refreshing: RefreshProgress | null;
   updating: Updating | null;
   dialog: Dialog | null;
@@ -109,9 +130,26 @@ export interface State {
 
   init: () => Promise<void>;
   reloadSidebar: () => Promise<void>;
+  reloadIcons: () => Promise<void>;
   reload: () => Promise<void>;
   setView: (v: View) => void;
+  /** The feeds in the order the sidebar shows them: each folder's, then the loose ones. */
+  feedOrder: () => FeedRow[];
+  /** Opens a feed; `selectFirstUnread`: and its first unread article once the list is in. */
+  openFeed: (id: number, selectFirstUnread?: boolean) => Promise<void>;
+  /** The next feed with unread articles after the open feed or folder (wrapping), or null. */
+  nextUnreadFeed: () => number | null;
+  /** N: the next unread article; at the end of the list, the next feed with unread ones. */
+  nextUnread: () => Promise<void>;
+  /** Shift+J / Shift+K: the next / previous feed. */
+  moveFeed: (delta: 1 | -1) => void;
   setUnreadOnly: (on: boolean) => void;
+  setOldestFirst: (on: boolean) => void;
+  /** While dragging a pane's handle: in memory only; `savePaneWidths` on release. */
+  setPaneWidth: (pane: Pane, width: number) => void;
+  savePaneWidths: () => void;
+  /** Double click on a handle: the default width, saved. */
+  resetPaneWidth: (pane: Pane) => void;
   setSearch: (s: string) => void;
   toggleFolder: (id: number) => void;
   select: (id: number | null) => Promise<void>;
@@ -122,6 +160,9 @@ export interface State {
   /** Into or out of あとで読む (L). */
   toggleLater: () => Promise<void>;
   markAllRead: () => Promise<void>;
+  /** The unread articles above / below the selected one. */
+  markAbove: () => Promise<void>;
+  markBelow: () => Promise<void>;
   /**
    * Refreshes `ids` (all feeds when absent). `quiet`: the automatic refresh,
    * which tells of no failures (the sidebar marks the feed; a dead feed
@@ -158,7 +199,63 @@ let finishOnLeave: number | null = null;
 export const useStore = create<State>((set, get) => {
   const query = (): ArticleQuery => {
     const s = get();
-    return { view: s.view, unreadOnly: s.unreadOnly, search: s.search.trim(), keep: s.selectedId };
+    return { view: s.view, unreadOnly: s.unreadOnly, search: s.search.trim(), keep: s.selectedId, oldestFirst: s.oldestFirst };
+  };
+  const savePrefsNow = () =>
+    savePrefs({
+      unreadOnly: get().unreadOnly,
+      oldestFirst: get().oldestFirst,
+      collapsed: [...get().collapsed],
+      sidebarWidth: get().sidebarWidth,
+      listWidth: get().listWidth,
+    });
+  /** Asks the list again; whether the answer was used (false: a newer query overtook it, or it failed). */
+  const load = async (): Promise<boolean> => {
+    const seq = ++querySeq;
+    try {
+      const articles = await api.queryArticles(query());
+      if (seq !== querySeq) return false;
+      set({ articles, loaded: true });
+      return true;
+    } catch (e) {
+      if (seq === querySeq) fail(e);
+      return false;
+    }
+  };
+  /** Switches the view; resolves when its list is in. */
+  const switchView = (v: View): Promise<boolean> => {
+    if (sameView(v, get().view)) return Promise.resolve(false);
+    leave(null);
+    set({ view: v, selectedId: null, article: null });
+    return load();
+  };
+  /** Read on rows already shown (Rust has marked them): sidebar, then the toast with 元に戻す. */
+  const announceRead = async (ids: number[]) => {
+    patch(ids, { read: true });
+    await get().reloadSidebar();
+    get().notify({
+      title: `${ids.length} 件を既読にしました`,
+      kind: "success",
+      action: {
+        label: "元に戻す",
+        onClick: () => {
+          api.setRead(ids, false).then(() => {
+            patch(ids, { read: false });
+            void get().reloadSidebar();
+            void get().reload();
+          }, fail);
+        },
+      },
+    });
+  };
+  const markRead = async (ids: number[]) => {
+    if (!ids.length) return;
+    try {
+      await api.setRead(ids, true);
+      await announceRead(ids);
+    } catch (e) {
+      fail(e);
+    }
   };
   /** Leaving the open article for `next`: a finished あとで読む goes out of it. Its row stays until the list is asked again. */
   const leave = (next: number | null) => {
@@ -185,13 +282,17 @@ export const useStore = create<State>((set, get) => {
     sidebar: EMPTY_SIDEBAR,
     view: { kind: "all" },
     unreadOnly: prefs.unreadOnly,
+    oldestFirst: prefs.oldestFirst,
+    sidebarWidth: prefs.sidebarWidth,
+    listWidth: prefs.listWidth,
     search: "",
     articles: [],
     loaded: false,
     selectedId: null,
     article: null,
     collapsed: new Set(prefs.collapsed),
-    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system" },
+    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false },
+    icons: {},
     refreshing: null,
     updating: null,
     dialog: null,
@@ -205,7 +306,18 @@ export const useStore = create<State>((set, get) => {
       } catch (e) {
         warn("settings", e);
       }
-      await Promise.all([get().reloadSidebar(), get().reload()]);
+      await Promise.all([get().reloadSidebar(), get().reload(), get().reloadIcons()]);
+    },
+
+    reloadIcons: async () => {
+      try {
+        const icons: Record<number, string> = {};
+        for (const i of await api.feedIcons()) icons[i.feedId] = i.icon;
+        set({ icons });
+      } catch (e) {
+        // Icons are a nicety: the generic one stays.
+        warn("icons", e);
+      }
     },
 
     reloadSidebar: async () => {
@@ -224,27 +336,91 @@ export const useStore = create<State>((set, get) => {
     },
 
     reload: async () => {
-      const seq = ++querySeq;
-      try {
-        const articles = await api.queryArticles(query());
-        if (seq !== querySeq) return;
-        set({ articles, loaded: true });
-      } catch (e) {
-        if (seq === querySeq) fail(e);
-      }
+      await load();
     },
 
-    setView: (v) => {
-      if (sameView(v, get().view)) return;
-      leave(null);
-      set({ view: v, selectedId: null, article: null });
-      void get().reload();
+    setView: (v) => void switchView(v),
+
+    feedOrder: () => {
+      const { folders, feeds } = get().sidebar;
+      return [...folders.flatMap((d) => feeds.filter((f) => f.folderId === d.id)), ...feeds.filter((f) => f.folderId === null)];
+    },
+
+    openFeed: async (id, selectFirstUnread = false) => {
+      const feed = get().sidebar.feeds.find((f) => f.id === id);
+      // A feed inside a closed folder opens the folder, so it shows in the sidebar.
+      if (feed?.folderId != null && get().collapsed.has(feed.folderId)) {
+        const collapsed = new Set(get().collapsed);
+        collapsed.delete(feed.folderId);
+        set({ collapsed });
+        savePrefsNow();
+      }
+      const v: View = { kind: "feed", id };
+      const same = sameView(v, get().view);
+      const used = same ? (selectFirstUnread ? await load() : false) : await switchView(v);
+      if (!selectFirstUnread || !used || !sameView(v, get().view)) return;
+      const first = get().articles.find((a) => !a.read);
+      if (first) await get().select(first.id);
+    },
+
+    nextUnreadFeed: () => {
+      const { view } = get();
+      const order = get().feedOrder();
+      let pos = -1;
+      if (view.kind === "feed") pos = order.findIndex((f) => f.id === view.id);
+      else if (view.kind === "folder") {
+        for (let i = order.length - 1; i >= 0; i--) if (order[i].folderId === view.id) { pos = i; break; }
+      }
+      for (let k = 1; k <= order.length; k++) {
+        const f = order[(pos + k) % order.length];
+        if (f.unread > 0) return f.id;
+      }
+      return null;
+    },
+
+    nextUnread: async () => {
+      const { articles, selectedId, view } = get();
+      const i = articles.findIndex((a) => a.id === selectedId);
+      const next = articles.slice(i + 1).find((a) => !a.read);
+      if (next) return void (await get().select(next.id));
+      if (view.kind === "feed" || view.kind === "folder") {
+        const id = get().nextUnreadFeed();
+        if (id !== null) return void (await get().openFeed(id, true));
+      }
+      get().toast("未読の記事はもうありません");
+    },
+
+    moveFeed: (delta) => {
+      const { view, unreadOnly } = get();
+      const order = get().feedOrder();
+      if (!order.length) return;
+      const pos = view.kind === "feed" ? order.findIndex((f) => f.id === view.id) : delta > 0 ? -1 : order.length;
+      for (let k = 1; k <= order.length; k++) {
+        const f = order[(((pos + delta * k) % order.length) + order.length) % order.length];
+        if (f.id === (view.kind === "feed" ? view.id : null)) return;
+        if (unreadOnly && f.unread === 0) continue;
+        void get().openFeed(f.id);
+        return;
+      }
     },
 
     setUnreadOnly: (on) => {
       set({ unreadOnly: on });
-      savePrefs({ unreadOnly: on, collapsed: [...get().collapsed] });
+      savePrefsNow();
       void get().reload();
+    },
+
+    setOldestFirst: (on) => {
+      set({ oldestFirst: on });
+      savePrefsNow();
+      void get().reload();
+    },
+
+    setPaneWidth: (pane, width) => set(pane === "sidebar" ? { sidebarWidth: width } : { listWidth: width }),
+    savePaneWidths: () => savePrefsNow(),
+    resetPaneWidth: (pane) => {
+      get().setPaneWidth(pane, PANE_DEFAULT[pane]);
+      savePrefsNow();
     },
 
     setSearch: (search) => {
@@ -257,7 +433,7 @@ export const useStore = create<State>((set, get) => {
       const collapsed = new Set(get().collapsed);
       if (!collapsed.delete(id)) collapsed.add(id);
       set({ collapsed });
-      savePrefs({ unreadOnly: get().unreadOnly, collapsed: [...collapsed] });
+      savePrefsNow();
     },
 
     select: async (id) => {
@@ -331,25 +507,29 @@ export const useStore = create<State>((set, get) => {
       try {
         const ids = await api.markAllRead(query());
         if (!ids.length) return;
-        patch(ids, { read: true });
-        void get().reloadSidebar();
-        get().notify({
-          title: `${ids.length} 件を既読にしました`,
-          kind: "success",
-          action: {
-            label: "元に戻す",
-            onClick: () => {
-              api.setRead(ids, false).then(() => {
-                patch(ids, { read: false });
-                void get().reloadSidebar();
-                void get().reload();
-              }, fail);
-            },
-          },
-        });
+        await announceRead(ids);
+        const { view, settings } = get();
+        if (settings.nextFeedAfterReadAll && (view.kind === "feed" || view.kind === "folder")) {
+          const id = get().nextUnreadFeed();
+          if (id !== null) await get().openFeed(id);
+        }
       } catch (e) {
         fail(e);
       }
+    },
+
+    markAbove: async () => {
+      const { articles, selectedId } = get();
+      const i = articles.findIndex((a) => a.id === selectedId);
+      if (i < 0) return;
+      await markRead(articles.slice(0, i).filter((a) => !a.read).map((a) => a.id));
+    },
+
+    markBelow: async () => {
+      const { articles, selectedId } = get();
+      const i = articles.findIndex((a) => a.id === selectedId);
+      if (i < 0) return;
+      await markRead(articles.slice(i + 1).filter((a) => !a.read).map((a) => a.id));
     },
 
     refresh: async (ids, quiet = false) => {

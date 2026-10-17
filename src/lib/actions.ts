@@ -3,7 +3,7 @@
  * open / save / confirm), kept out of the command table so it stays a table.
  */
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
-import { api } from "./api";
+import { api, type FeedInfo } from "./api";
 import { useStore } from "../store";
 
 const st = () => useStore.getState();
@@ -67,6 +67,14 @@ export function renameFolderDialog(id: number) {
       await st().reloadSidebar();
     },
   });
+}
+
+/** Moves the feed to another URL (a page that names its feed works too), then shows the change. Throws so the dialog can show the reason under the field. */
+export async function changeFeedUrl(id: number, url: string): Promise<FeedInfo> {
+  const info = await api.changeFeedUrl(id, url);
+  await Promise.all([st().reloadSidebar(), st().reload(), st().reloadIcons()]);
+  st().toast("URL を変更しました");
+  return info;
 }
 
 export function moveFeedDialog(feedId: number) {
