@@ -92,6 +92,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           ))}
         </select>
       </Row>
+      <Row label="既読にしたあと">
+        <label className="flex items-center gap-2 pt-1.5">
+          <input
+            type="checkbox"
+            checked={settings.nextFeedAfterReadAll}
+            onChange={(e) => void setSettings({ ...settings, nextFeedAfterReadAll: e.target.checked })}
+          />
+          すべて既読にしたら次のフィードへ移る
+        </label>
+      </Row>
       <Row label="アップデート">
         <label className="flex items-center gap-2 pt-1.5">
           <input

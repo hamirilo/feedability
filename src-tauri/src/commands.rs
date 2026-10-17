@@ -83,6 +83,8 @@ pub struct AppSettings {
     keep_days: u32,
     /// 外観: the OS's, or always light / dark (docs/THEME.md).
     pub theme: Theme,
+    /// After すべて既読, move on to the next feed with unread articles.
+    next_feed_after_read_all: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -127,6 +129,7 @@ impl Default for AppSettings {
             refresh_minutes: 30,
             keep_days: 30,
             theme: Theme::System,
+            next_feed_after_read_all: false,
         }
     }
 }

@@ -41,7 +41,7 @@ const articles: MockArticle[] = [];
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
-const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system" };
+const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false };
 
 const LOREM =
   "フィードリーダーは、購読したサイトの新しい記事をまとめて読むための道具です。サイトを一つずつ見に行かなくても、更新があったものだけが届きます。";
@@ -140,7 +140,11 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       return articles
         .filter((x) => matches(x, q) && (!unreadOnly || !x.read || x.id === q.keep))
         .sort((x, y) =>
-          q.view.kind === "later" ? x.laterAt! - y.laterAt! || x.id - y.id : y.published - x.published || y.id - x.id,
+          q.view.kind === "later"
+            ? x.laterAt! - y.laterAt! || x.id - y.id
+            : q.oldestFirst
+              ? x.published - y.published || x.id - y.id
+              : y.published - x.published || y.id - x.id,
         )
         .map(({ laterAt, ...x }): ArticleRow => ({
           ...x,

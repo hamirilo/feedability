@@ -514,6 +514,9 @@ pub struct ArticleQuery {
     /// with 未読のみ on doesn't pull it out from under the user.
     #[serde(default)]
     pub keep: Option<i64>,
+    /// Oldest first, for the views by date. あとで読む keeps the order it was filled in.
+    #[serde(default)]
+    pub oldest_first: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -592,7 +595,13 @@ pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<Artic
          FROM articles a JOIN feeds f ON f.id = a.feed_id
          WHERE {sql_filter}
          ORDER BY {order}",
-        order = if q.view == View::Later { "a.later_at, a.id" } else { "a.published DESC, a.id DESC" }
+        order = if q.view == View::Later {
+            "a.later_at, a.id"
+        } else if q.oldest_first {
+            "a.published ASC, a.id ASC"
+        } else {
+            "a.published DESC, a.id DESC"
+        }
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args), |r| {
@@ -732,6 +741,7 @@ mod tests {
             unread_only: false,
             search: String::new(),
             keep: None,
+            oldest_first: false,
         }
     }
 
@@ -790,6 +800,7 @@ mod tests {
             unread_only,
             search: search.into(),
             keep,
+            oldest_first: false,
         };
         assert_eq!(
             query_articles(&conn, &q(View::Folder { id: folder }, false, "", None))
@@ -906,6 +917,57 @@ mod tests {
 
     fn db_article_later(conn: &Connection, id: i64) -> bool {
         article(conn, id).unwrap().unwrap().later
+    }
+
+    #[test]
+    fn oldest_first_reverses_the_order_but_not_in_later() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        store_articles(
+            &mut conn,
+            feed,
+            &[art("a", "A", 1000), art("b", "B", 2000), art("c", "C", 3000)],
+        )
+        .unwrap();
+        fn titles(conn: &Connection, q: &ArticleQuery) -> Vec<String> {
+            query_articles(conn, q)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.title)
+                .collect()
+        }
+        let feed_q = ArticleQuery {
+            view: View::Feed { id: feed },
+            ..all()
+        };
+        assert_eq!(titles(&conn, &feed_q), ["C", "B", "A"]);
+        let oldest = ArticleQuery {
+            oldest_first: true,
+            ..feed_q
+        };
+        assert_eq!(titles(&conn, &oldest), ["A", "B", "C"]);
+
+        // あとで読む stays in the order they went in.
+        let id = |t: &str| {
+            query_articles(&conn, &all())
+                .unwrap()
+                .into_iter()
+                .find(|r| r.title == t)
+                .unwrap()
+                .id
+        };
+        let (a, c) = (id("A"), id("C"));
+        set_later(&mut conn, &[c], true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        set_later(&mut conn, &[a], true).unwrap();
+        for oldest_first in [false, true] {
+            let later = ArticleQuery {
+                view: View::Later,
+                oldest_first,
+                ..all()
+            };
+            assert_eq!(titles(&conn, &later), ["C", "A"]);
+        }
     }
 
     #[test]

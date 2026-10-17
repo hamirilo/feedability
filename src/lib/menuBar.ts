@@ -134,6 +134,10 @@ async function build(): Promise<Menu> {
   const article = submenu("記事", [
     cmd("go.next"),
     cmd("go.prev"),
+    cmd("go.nextUnread"),
+    sep(),
+    cmd("go.nextFeed"),
+    cmd("go.prevFeed"),
     sep(),
     cmd("article.read"),
     cmd("article.star"),
@@ -141,9 +145,11 @@ async function build(): Promise<Menu> {
     cmd("article.open"),
     sep(),
     cmd("list.markAllRead"),
+    cmd("list.markAboveRead"),
+    cmd("list.markBelowRead"),
   ]);
 
-  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly")]);
+  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly"), cmd("list.oldestFirst")]);
 
   const windowMenu = isMac
     ? [

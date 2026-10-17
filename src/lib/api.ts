@@ -45,6 +45,8 @@ export interface ArticleQuery {
   search: string;
   /** Listed even when read (the article open in the reader). */
   keep?: number | null;
+  /** Oldest first (not in あとで読む). */
+  oldestFirst?: boolean;
 }
 
 export interface ArticleRow {
@@ -86,6 +88,8 @@ export interface AppSettings {
   /** 0 = keep read articles for good. */
   keepDays: number;
   theme: ThemeSetting;
+  /** After すべて既読, open the next feed with unread articles. */
+  nextFeedAfterReadAll: boolean;
 }
 
 export interface Added {

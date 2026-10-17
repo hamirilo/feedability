@@ -61,6 +61,13 @@ const openFeed = (s: S) => (s.view.kind === "feed" ? s.view.id : null);
 const openFolder = (s: S) => (s.view.kind === "folder" ? s.view.id : null);
 const hasFeeds = (s: S) => s.sidebar.feeds.length > 0;
 
+/** Whether an article is selected and the list has an unread row above (-1) or below (1) it. */
+function unreadOn(s: S, side: -1 | 1): boolean {
+  const i = s.articles.findIndex((a) => a.id === s.selectedId);
+  if (i < 0) return false;
+  return (side < 0 ? s.articles.slice(0, i) : s.articles.slice(i + 1)).some((a) => !a.read);
+}
+
 /** Space: a screen further down the article; at its end, the next article. */
 function pageDown(s: S) {
   const el = document.getElementById("reader-scroll");
@@ -159,6 +166,9 @@ export const COMMANDS: Command[] = [
   // ---------------------------------------------------------------- list
   { id: "go.next", title: "次の記事", keys: ["J", "ArrowDown"], run: (s) => s.move(1) },
   { id: "go.prev", title: "前の記事", keys: ["K", "ArrowUp"], run: (s) => s.move(-1) },
+  { id: "go.nextUnread", title: "次の未読の記事", keys: ["N"], run: (s) => void s.nextUnread() },
+  { id: "go.nextFeed", title: "次のフィード", keys: ["Shift+J"], enabled: hasFeeds, run: (s) => s.moveFeed(1) },
+  { id: "go.prevFeed", title: "前のフィード", keys: ["Shift+K"], enabled: hasFeeds, run: (s) => s.moveFeed(-1) },
   {
     id: "list.unreadOnly",
     title: "未読のみ表示",
@@ -169,6 +179,13 @@ export const COMMANDS: Command[] = [
     run: (s) => s.setUnreadOnly(!s.unreadOnly),
   },
   {
+    id: "list.oldestFirst",
+    title: "古い順に並べる",
+    enabled: (s) => s.view.kind !== "later",
+    checked: (s) => s.oldestFirst,
+    run: (s) => s.setOldestFirst(!s.oldestFirst),
+  },
+  {
     id: "list.markAllRead",
     title: "一覧をすべて既読にする",
     icon: CheckCheck,
@@ -176,6 +193,18 @@ export const COMMANDS: Command[] = [
     keyBy: "global",
     enabled: (s) => s.articles.some((a) => !a.read),
     run: (s) => void s.markAllRead(),
+  },
+  {
+    id: "list.markAboveRead",
+    title: "ここより上を既読にする",
+    enabled: (s) => unreadOn(s, -1),
+    run: (s) => void s.markAbove(),
+  },
+  {
+    id: "list.markBelowRead",
+    title: "ここより下を既読にする",
+    enabled: (s) => unreadOn(s, 1),
+    run: (s) => void s.markBelow(),
   },
   {
     id: "edit.search",
