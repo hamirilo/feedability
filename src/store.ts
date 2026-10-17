@@ -1,0 +1,397 @@
+/**
+ * The one store (zustand): what is shown (view, filters, the list, the open
+ * article), the dialogs and the toasts. The list is the query's result as
+ * is; after a change in Rust it is asked again, not patched up here, except
+ * for read / starred on rows already shown (so reading with 未読のみ on
+ * doesn't pull the row out from under the user).
+ */
+import { create } from "zustand";
+import {
+  api,
+  sameView,
+  type AppSettings,
+  type Article,
+  type ArticleQuery,
+  type ArticleRow,
+  type RefreshProgress,
+  type Sidebar,
+  type View,
+} from "./lib/api";
+import { warn } from "./lib/log";
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
+export type ToastKind = "success" | "info" | "error";
+
+export interface ToastOptions {
+  title: string;
+  detail?: string;
+  kind?: ToastKind;
+  action?: ToastAction;
+  /** How long it stays, in ms. */
+  duration?: number;
+  /** Rewrite this toast in place (a result following its "…しています"), if it is still showing. */
+  replace?: number;
+}
+
+export interface Toast extends Required<Pick<ToastOptions, "title" | "kind" | "duration">> {
+  id: number;
+  /** Bumped when the toast is rewritten in place; restarts its countdown. */
+  rev: number;
+  detail?: string;
+  action?: ToastAction;
+  leaving?: boolean;
+}
+
+export type Dialog =
+  | { kind: "settings" }
+  | { kind: "shortcuts" }
+  | { kind: "addFeed" }
+  | {
+      kind: "prompt";
+      title: string;
+      label: string;
+      value: string;
+      okLabel: string;
+      onOk: (value: string) => Promise<void> | void;
+    }
+  | { kind: "moveFeed"; feedId: number };
+
+export interface Updating {
+  done: number;
+  total: number | null;
+  installing?: boolean;
+}
+
+/** Display preferences: the same in every session (localStorage). */
+const PREFS_KEY = "feedability.prefs";
+interface Prefs {
+  unreadOnly: boolean;
+  collapsed: number[];
+}
+function loadPrefs(): Prefs {
+  const fallback: Prefs = { unreadOnly: true, collapsed: [] };
+  try {
+    return { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
+  } catch {
+    return fallback;
+  }
+}
+function savePrefs(p: Prefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {
+    /* private mode: the defaults next time */
+  }
+}
+
+export interface State {
+  sidebar: Sidebar;
+  view: View;
+  unreadOnly: boolean;
+  search: string;
+  articles: ArticleRow[];
+  /** The list has been asked at least once (empty states wait for it). */
+  loaded: boolean;
+  selectedId: number | null;
+  article: Article | null;
+  /** Folders closed in the sidebar. */
+  collapsed: Set<number>;
+  settings: AppSettings;
+  refreshing: RefreshProgress | null;
+  updating: Updating | null;
+  dialog: Dialog | null;
+  toasts: Toast[];
+
+  init: () => Promise<void>;
+  reloadSidebar: () => Promise<void>;
+  reload: () => Promise<void>;
+  setView: (v: View) => void;
+  setUnreadOnly: (on: boolean) => void;
+  setSearch: (s: string) => void;
+  toggleFolder: (id: number) => void;
+  select: (id: number | null) => Promise<void>;
+  /** Next / previous article in the list (J / K). */
+  move: (delta: 1 | -1) => void;
+  toggleRead: () => Promise<void>;
+  toggleStar: () => Promise<void>;
+  markAllRead: () => Promise<void>;
+  /**
+   * Refreshes `ids` (all feeds when absent). `quiet`: the automatic refresh,
+   * which tells of no failures (the sidebar marks the feed; a dead feed
+   * would otherwise bring the same red toast every half hour).
+   */
+  refresh: (ids?: number[], quiet?: boolean) => Promise<void>;
+  setSettings: (s: AppSettings) => Promise<void>;
+  setRefreshing: (p: RefreshProgress | null) => void;
+  setUpdating: (u: Updating | null) => void;
+  openDialog: (d: Dialog) => void;
+  closeDialog: () => void;
+
+  toast: (message: string, error?: boolean, action?: ToastAction) => void;
+  /** A toast with a title, detail line and kind. Returns its id. */
+  notify: (t: ToastOptions) => number;
+  dismissToast: (id: number) => void;
+}
+
+const EMPTY_SIDEBAR: Sidebar = { folders: [], feeds: [], unread: 0, starred: 0 };
+const prefs = loadPrefs();
+let toastSeq = 0;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+/** The latest list query: an older answer arriving late is dropped. */
+let querySeq = 0;
+let articleSeq = 0;
+
+export const useStore = create<State>((set, get) => {
+  const query = (): ArticleQuery => {
+    const s = get();
+    return { view: s.view, unreadOnly: s.unreadOnly, search: s.search.trim(), keep: s.selectedId };
+  };
+  const fail = (e: unknown) => get().toast(String(e), true);
+  /** Read / starred on the rows already shown and on the open article. */
+  const patch = (ids: number[], change: Partial<Pick<ArticleRow, "read" | "starred">>) => {
+    const set_ = new Set(ids);
+    const a = get().article;
+    set({
+      articles: get().articles.map((r) => (set_.has(r.id) ? { ...r, ...change } : r)),
+      article: a && set_.has(a.id) ? { ...a, ...change } : a,
+    });
+  };
+
+  return {
+    sidebar: EMPTY_SIDEBAR,
+    view: { kind: "all" },
+    unreadOnly: prefs.unreadOnly,
+    search: "",
+    articles: [],
+    loaded: false,
+    selectedId: null,
+    article: null,
+    collapsed: new Set(prefs.collapsed),
+    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30 },
+    refreshing: null,
+    updating: null,
+    dialog: null,
+    toasts: [],
+
+    init: async () => {
+      try {
+        set({ settings: await api.getAppSettings() });
+      } catch (e) {
+        warn("settings", e);
+      }
+      await Promise.all([get().reloadSidebar(), get().reload()]);
+    },
+
+    reloadSidebar: async () => {
+      try {
+        const sidebar = await api.getSidebar();
+        // The open feed or folder is gone (deleted): back to すべて.
+        const v = get().view;
+        const gone =
+          (v.kind === "feed" && !sidebar.feeds.some((f) => f.id === v.id)) ||
+          (v.kind === "folder" && !sidebar.folders.some((f) => f.id === v.id));
+        set({ sidebar });
+        if (gone) get().setView({ kind: "all" });
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    reload: async () => {
+      const seq = ++querySeq;
+      try {
+        const articles = await api.queryArticles(query());
+        if (seq !== querySeq) return;
+        set({ articles, loaded: true });
+      } catch (e) {
+        if (seq === querySeq) fail(e);
+      }
+    },
+
+    setView: (v) => {
+      if (sameView(v, get().view)) return;
+      set({ view: v, selectedId: null, article: null });
+      void get().reload();
+    },
+
+    setUnreadOnly: (on) => {
+      set({ unreadOnly: on });
+      savePrefs({ unreadOnly: on, collapsed: [...get().collapsed] });
+      void get().reload();
+    },
+
+    setSearch: (search) => {
+      set({ search });
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => void get().reload(), 150);
+    },
+
+    toggleFolder: (id) => {
+      const collapsed = new Set(get().collapsed);
+      if (!collapsed.delete(id)) collapsed.add(id);
+      set({ collapsed });
+      savePrefs({ unreadOnly: get().unreadOnly, collapsed: [...collapsed] });
+    },
+
+    select: async (id) => {
+      const seq = ++articleSeq;
+      set({ selectedId: id, article: id === get().article?.id ? get().article : null });
+      if (id === null) return;
+      try {
+        const article = await api.getArticle(id);
+        if (seq !== articleSeq) return;
+        set({ article });
+        // Opening an article reads it.
+        if (!article.read) {
+          await api.setRead([id], true);
+          patch([id], { read: true });
+          void get().reloadSidebar();
+        }
+      } catch (e) {
+        if (seq === articleSeq) fail(e);
+      }
+    },
+
+    move: (delta) => {
+      const { articles, selectedId } = get();
+      if (!articles.length) return;
+      const i = articles.findIndex((a) => a.id === selectedId);
+      const next = i < 0 ? (delta > 0 ? 0 : articles.length - 1) : i + delta;
+      if (next < 0 || next >= articles.length) return;
+      void get().select(articles[next].id);
+    },
+
+    toggleRead: async () => {
+      const a = get().article;
+      if (!a) return;
+      try {
+        await api.setRead([a.id], !a.read);
+        patch([a.id], { read: !a.read });
+        void get().reloadSidebar();
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    toggleStar: async () => {
+      const a = get().article;
+      if (!a) return;
+      try {
+        await api.setStarred(a.id, !a.starred);
+        patch([a.id], { starred: !a.starred });
+        void get().reloadSidebar();
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    markAllRead: async () => {
+      try {
+        const ids = await api.markAllRead(query());
+        if (!ids.length) return;
+        patch(ids, { read: true });
+        void get().reloadSidebar();
+        get().notify({
+          title: `${ids.length} 件を既読にしました`,
+          kind: "success",
+          action: {
+            label: "元に戻す",
+            onClick: () => {
+              api.setRead(ids, false).then(() => {
+                patch(ids, { read: false });
+                void get().reloadSidebar();
+                void get().reload();
+              }, fail);
+            },
+          },
+        });
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    refresh: async (ids, quiet = false) => {
+      if (get().refreshing) return;
+      if (!get().sidebar.feeds.length && !ids) return;
+      set({ refreshing: { done: 0, total: ids?.length ?? get().sidebar.feeds.length } });
+      try {
+        const r = await api.refreshFeeds(ids);
+        if (r.failed.length && !quiet) {
+          get().notify({
+            title: `${r.failed.length} 件のフィードを更新できませんでした`,
+            detail: r.failed
+              .slice(0, 3)
+              .map((f) => `${f.title}：${f.error}`)
+              .join("\n"),
+            kind: "error",
+            duration: 8000,
+          });
+        } else if (r.cancelled) {
+          get().toast("更新を中止しました");
+        }
+      } catch (e) {
+        // A refresh already running (the timer and ⌘R meeting) isn't worth a toast.
+        if (String(e) !== "更新中です" && !quiet) fail(e);
+      } finally {
+        set({ refreshing: null });
+        await Promise.all([get().reloadSidebar(), get().reload()]);
+      }
+    },
+
+    setSettings: async (s) => {
+      try {
+        set({ settings: await api.setAppSettings(s) });
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    setRefreshing: (refreshing) => {
+      // Progress events after the refresh returned would bring the bar back.
+      if (get().refreshing) set({ refreshing });
+    },
+    setUpdating: (updating) => set({ updating }),
+    openDialog: (dialog) => set({ dialog }),
+    closeDialog: () => set({ dialog: null }),
+
+    toast: (message, error, action) => void get().notify({ title: message, kind: error ? "error" : "info", action }),
+    notify: ({ title, detail, kind = "info", action, duration, replace }) => {
+      const rev = ++toastSeq;
+      const fields = { title, detail, kind, action, duration: duration ?? (action ? 8000 : 4000), rev };
+      if (replace !== undefined && get().toasts.some((x) => x.id === replace && !x.leaving)) {
+        set({ toasts: get().toasts.map((x) => (x.id === replace ? { ...fields, id: replace } : x)) });
+        return replace;
+      }
+      const t: Toast = { ...fields, id: rev };
+      // At most three at once: the oldest go first.
+      const live = get().toasts.filter((x) => !x.leaving);
+      for (const old of live.slice(0, Math.max(0, live.length - 2))) get().dismissToast(old.id);
+      set({ toasts: [...get().toasts, t] });
+      return t.id;
+    },
+    dismissToast: (id) => {
+      if (!get().toasts.some((t) => t.id === id && !t.leaving)) return;
+      set({ toasts: get().toasts.map((t) => (t.id === id ? { ...t, leaving: true } : t)) });
+      setTimeout(() => set({ toasts: get().toasts.filter((t) => t.id !== id) }), 200);
+    },
+  };
+});
+
+/** The title of what the list shows. */
+export function viewTitle(s: Pick<State, "view" | "sidebar">): string {
+  const v = s.view;
+  switch (v.kind) {
+    case "all":
+      return "すべての記事";
+    case "starred":
+      return "スター付き";
+    case "feed":
+      return s.sidebar.feeds.find((f) => f.id === v.id)?.title ?? "";
+    case "folder":
+      return s.sidebar.folders.find((f) => f.id === v.id)?.name ?? "";
+  }
+}

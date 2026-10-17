@@ -1,0 +1,926 @@
+//! The subscriptions and articles: one SQLite file in the app's data folder
+//! (feedability.db, see README「データ」). Everything here takes a plain
+//! `Connection` so the tests run on an in-memory database.
+//!
+//! An article keeps `seen_at`, the last refresh that still found it in its
+//! feed. Old read articles are removed only once their feed has dropped them
+//! too (`purge`): removing one the feed still lists would bring it back as
+//! unread on the next refresh.
+
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+pub type DbResult<T> = rusqlite::Result<T>;
+
+/// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
+/// an older app opening a newer file must still be able to read it.
+const VERSION: i64 = 1;
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+pub fn open(path: &Path) -> DbResult<Connection> {
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    setup(&conn)?;
+    Ok(conn)
+}
+
+#[cfg(test)]
+pub fn open_in_memory() -> DbResult<Connection> {
+    let conn = Connection::open_in_memory()?;
+    setup(&conn)?;
+    Ok(conn)
+}
+
+fn setup(conn: &Connection) -> DbResult<()> {
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    migrate(conn)
+}
+
+/// Everything written back into feedability.db and the WAL emptied, so the
+/// file is complete on its own (a backup copied while the app is closed).
+pub fn close(conn: Connection) {
+    if let Err(e) = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE") {
+        log::warn!("checkpoint: {e}");
+    }
+    if let Err((_, e)) = conn.close() {
+        log::warn!("close: {e}");
+    }
+}
+
+fn migrate(conn: &Connection) -> DbResult<()> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version < 1 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS folders (
+               id INTEGER PRIMARY KEY,
+               name TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS feeds (
+               id INTEGER PRIMARY KEY,
+               url TEXT NOT NULL UNIQUE,
+               -- From the feed itself; `custom_title` when the user renamed it.
+               title TEXT NOT NULL,
+               custom_title TEXT,
+               site_url TEXT,
+               folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+               added_at INTEGER NOT NULL,
+               fetched_at INTEGER,
+               -- Why the last refresh failed; NULL when it worked.
+               error TEXT,
+               -- For conditional requests: an unchanged feed costs one 304.
+               etag TEXT,
+               last_modified TEXT
+             );
+             CREATE TABLE IF NOT EXISTS articles (
+               id INTEGER PRIMARY KEY,
+               feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+               guid TEXT NOT NULL,
+               url TEXT,
+               title TEXT NOT NULL,
+               author TEXT,
+               -- Plain text for the list; `content` is the feed's HTML as is,
+               -- sanitized when shown (sanitize.rs).
+               summary TEXT NOT NULL DEFAULT '',
+               content TEXT NOT NULL DEFAULT '',
+               published INTEGER NOT NULL,
+               added_at INTEGER NOT NULL,
+               seen_at INTEGER NOT NULL,
+               read INTEGER NOT NULL DEFAULT 0,
+               starred INTEGER NOT NULL DEFAULT 0,
+               UNIQUE (feed_id, guid)
+             );
+             CREATE INDEX IF NOT EXISTS articles_published ON articles(published DESC);
+             CREATE INDEX IF NOT EXISTS articles_feed ON articles(feed_id, published DESC);
+             CREATE INDEX IF NOT EXISTS articles_unread ON articles(feed_id) WHERE read = 0;
+             CREATE INDEX IF NOT EXISTS articles_starred ON articles(starred) WHERE starred = 1;
+             COMMIT;",
+        )?;
+    }
+    if version < VERSION {
+        conn.pragma_update(None, "user_version", VERSION)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- sidebar
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderRow {
+    pub id: i64,
+    pub name: String,
+    pub unread: i64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedRow {
+    pub id: i64,
+    pub title: String,
+    pub url: String,
+    pub site_url: Option<String>,
+    pub folder_id: Option<i64>,
+    pub unread: i64,
+    pub error: Option<String>,
+    pub fetched_at: Option<i64>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Sidebar {
+    pub folders: Vec<FolderRow>,
+    pub feeds: Vec<FeedRow>,
+    pub unread: i64,
+    pub starred: i64,
+}
+
+pub fn sidebar(conn: &Connection) -> DbResult<Sidebar> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, COALESCE(f.custom_title, f.title), f.url, f.site_url, f.folder_id, f.error, f.fetched_at,
+                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0)
+         FROM feeds f
+         ORDER BY COALESCE(f.custom_title, f.title) COLLATE NOCASE, f.id",
+    )?;
+    let feeds = stmt
+        .query_map([], |r| {
+            Ok(FeedRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                url: r.get(2)?,
+                site_url: r.get(3)?,
+                folder_id: r.get(4)?,
+                error: r.get(5)?,
+                fetched_at: r.get(6)?,
+                unread: r.get(7)?,
+            })
+        })?
+        .collect::<DbResult<Vec<_>>>()?;
+    let mut stmt = conn.prepare("SELECT id, name FROM folders ORDER BY name COLLATE NOCASE, id")?;
+    let folders = stmt
+        .query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            Ok(FolderRow {
+                id,
+                name: r.get(1)?,
+                unread: 0,
+            })
+        })?
+        .collect::<DbResult<Vec<_>>>()?
+        .into_iter()
+        .map(|mut f| {
+            f.unread = feeds
+                .iter()
+                .filter(|x| x.folder_id == Some(f.id))
+                .map(|x| x.unread)
+                .sum();
+            f
+        })
+        .collect();
+    let unread = feeds.iter().map(|f| f.unread).sum();
+    let starred = conn.query_row("SELECT COUNT(*) FROM articles WHERE starred = 1", [], |r| {
+        r.get(0)
+    })?;
+    Ok(Sidebar {
+        folders,
+        feeds,
+        unread,
+        starred,
+    })
+}
+
+// ---------------------------------------------------------------- folders
+
+pub fn create_folder(conn: &Connection, name: &str) -> DbResult<i64> {
+    conn.execute("INSERT INTO folders (name) VALUES (?1)", [name])?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// The folder with this name, made if there is none (OPML import).
+pub fn folder_named(conn: &Connection, name: &str) -> DbResult<i64> {
+    let found = conn
+        .query_row(
+            "SELECT id FROM folders WHERE name = ?1 ORDER BY id LIMIT 1",
+            [name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match found {
+        Some(id) => Ok(id),
+        None => create_folder(conn, name),
+    }
+}
+
+pub fn rename_folder(conn: &Connection, id: i64, name: &str) -> DbResult<()> {
+    conn.execute(
+        "UPDATE folders SET name = ?2 WHERE id = ?1",
+        params![id, name],
+    )?;
+    Ok(())
+}
+
+/// The folder only: its feeds move to the top level (`ON DELETE SET NULL`).
+pub fn delete_folder(conn: &Connection, id: i64) -> DbResult<()> {
+    conn.execute("DELETE FROM folders WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ feeds
+
+/// What a refresh needs to ask for a feed.
+#[derive(Clone, Debug)]
+pub struct FeedTarget {
+    pub id: i64,
+    pub url: String,
+    pub title: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+pub fn feed_id_by_url(conn: &Connection, url: &str) -> DbResult<Option<i64>> {
+    conn.query_row("SELECT id FROM feeds WHERE url = ?1", [url], |r| r.get(0))
+        .optional()
+}
+
+pub fn add_feed(
+    conn: &Connection,
+    url: &str,
+    title: &str,
+    site_url: Option<&str>,
+    folder_id: Option<i64>,
+) -> DbResult<i64> {
+    conn.execute(
+        "INSERT INTO feeds (url, title, site_url, folder_id, added_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![url, title, site_url, folder_id, now_ms()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Feeds to refresh: `ids`, or all of them.
+pub fn feed_targets(conn: &Connection, ids: Option<&[i64]>) -> DbResult<Vec<FeedTarget>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url, COALESCE(custom_title, title), etag, last_modified FROM feeds ORDER BY id",
+    )?;
+    let all = stmt
+        .query_map([], |r| {
+            Ok(FeedTarget {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                title: r.get(2)?,
+                etag: r.get(3)?,
+                last_modified: r.get(4)?,
+            })
+        })?
+        .collect::<DbResult<Vec<_>>>()?;
+    Ok(match ids {
+        Some(ids) => all.into_iter().filter(|f| ids.contains(&f.id)).collect(),
+        None => all,
+    })
+}
+
+/// An empty `title` keeps the feed's own; the user's name otherwise.
+pub fn rename_feed(conn: &Connection, id: i64, title: &str) -> DbResult<()> {
+    let custom = (!title.trim().is_empty()).then(|| title.trim());
+    conn.execute(
+        "UPDATE feeds SET custom_title = ?2 WHERE id = ?1",
+        params![id, custom],
+    )?;
+    Ok(())
+}
+
+pub fn move_feed(conn: &Connection, id: i64, folder_id: Option<i64>) -> DbResult<()> {
+    conn.execute(
+        "UPDATE feeds SET folder_id = ?2 WHERE id = ?1",
+        params![id, folder_id],
+    )?;
+    Ok(())
+}
+
+/// The feed and its articles, starred ones included.
+pub fn delete_feed(conn: &Connection, id: i64) -> DbResult<()> {
+    conn.execute("DELETE FROM feeds WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+/// After a refresh that reached the server: the feed's own title and site
+/// (the user's name stays in `custom_title`), and what to send next time.
+pub fn feed_fetched(
+    conn: &Connection,
+    id: i64,
+    title: Option<&str>,
+    site_url: Option<&str>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> DbResult<()> {
+    conn.execute(
+        "UPDATE feeds SET title = COALESCE(?2, title), site_url = COALESCE(?3, site_url),
+                          etag = ?4, last_modified = ?5, fetched_at = ?6, error = NULL
+         WHERE id = ?1",
+        params![
+            id,
+            title.filter(|t| !t.trim().is_empty()),
+            site_url,
+            etag,
+            last_modified,
+            now_ms()
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn feed_failed(conn: &Connection, id: i64, error: &str) -> DbResult<()> {
+    conn.execute(
+        "UPDATE feeds SET error = ?2, fetched_at = ?3 WHERE id = ?1",
+        params![id, error, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// An unchanged feed (304) still lists the same articles: they were seen now.
+pub fn feed_unchanged(conn: &Connection, id: i64) -> DbResult<()> {
+    let now = now_ms();
+    conn.execute(
+        "UPDATE feeds SET fetched_at = ?2, error = NULL WHERE id = ?1",
+        params![id, now],
+    )?;
+    conn.execute(
+        "UPDATE articles SET seen_at = ?2 WHERE feed_id = ?1",
+        params![id, now],
+    )?;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpmlFeed {
+    pub url: String,
+    pub title: String,
+    pub site_url: Option<String>,
+    pub folder: Option<String>,
+}
+
+/// Every feed with its folder's name, for the OPML export.
+pub fn feeds_for_export(conn: &Connection) -> DbResult<Vec<OpmlFeed>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.url, COALESCE(f.custom_title, f.title), f.site_url, d.name
+         FROM feeds f LEFT JOIN folders d ON d.id = f.folder_id
+         ORDER BY d.name COLLATE NOCASE, COALESCE(f.custom_title, f.title) COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(OpmlFeed {
+            url: r.get(0)?,
+            title: r.get(1)?,
+            site_url: r.get(2)?,
+            folder: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+// --------------------------------------------------------------- articles
+
+/// An article as a feed lists it (feed.rs).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewArticle {
+    pub guid: String,
+    pub url: Option<String>,
+    pub title: String,
+    pub author: Option<String>,
+    pub summary: String,
+    pub content: String,
+    pub published: Option<i64>,
+}
+
+/// Adds the feed's new articles and updates the ones it already had (a
+/// corrected title or text). Read and starred stay as they were. Returns how
+/// many were new.
+pub fn store_articles(
+    conn: &mut Connection,
+    feed_id: i64,
+    articles: &[NewArticle],
+) -> DbResult<usize> {
+    let now = now_ms();
+    let tx = conn.transaction()?;
+    let mut added = 0;
+    {
+        let mut exists = tx.prepare("SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2")?;
+        let mut insert = tx.prepare(
+            "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+        )?;
+        let mut update = tx.prepare(
+            "UPDATE articles SET url = ?2, title = ?3, author = ?4, summary = ?5, content = ?6, seen_at = ?7
+             WHERE id = ?1",
+        )?;
+        for a in articles {
+            let id: Option<i64> = exists
+                .query_row(params![feed_id, a.guid], |r| r.get(0))
+                .optional()?;
+            match id {
+                Some(id) => {
+                    update.execute(params![
+                        id, a.url, a.title, a.author, a.summary, a.content, now
+                    ])?;
+                }
+                None => {
+                    // Dated in the future (a wrong clock, a scheduled post):
+                    // it would sit at the top of the list for good.
+                    let published = a.published.map_or(now, |p| p.min(now));
+                    insert.execute(params![
+                        feed_id, a.guid, a.url, a.title, a.author, a.summary, a.content, published,
+                        now
+                    ])?;
+                    added += 1;
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(added)
+}
+
+/// Removes read, unstarred articles their feed stopped listing more than
+/// `keep_days` ago. 0 keeps everything.
+pub fn purge(conn: &Connection, keep_days: u32) -> DbResult<usize> {
+    if keep_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now_ms() - i64::from(keep_days) * 86_400_000;
+    conn.execute(
+        "DELETE FROM articles WHERE read = 1 AND starred = 0 AND seen_at < ?1",
+        [cutoff],
+    )
+}
+
+/// Which articles the list shows.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum View {
+    All,
+    Starred,
+    Feed { id: i64 },
+    Folder { id: i64 },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticleQuery {
+    pub view: View,
+    #[serde(default)]
+    pub unread_only: bool,
+    #[serde(default)]
+    pub search: String,
+    /// Listed even when read: the article open in the reader, so reading it
+    /// with 未読のみ on doesn't pull it out from under the user.
+    #[serde(default)]
+    pub keep: Option<i64>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticleRow {
+    pub id: i64,
+    pub feed_id: i64,
+    pub feed_title: String,
+    pub title: String,
+    pub summary: String,
+    pub url: Option<String>,
+    pub published: i64,
+    pub read: bool,
+    pub starred: bool,
+}
+
+/// How much of the summary the list gets: two lines at most are shown.
+const LIST_SUMMARY_CHARS: i64 = 160;
+
+/// `WHERE` for a query (without unread / keep) and its parameters.
+fn filter(q: &ArticleQuery) -> (String, Vec<rusqlite::types::Value>) {
+    use rusqlite::types::Value;
+    let mut clauses: Vec<String> = Vec::new();
+    let mut args: Vec<Value> = Vec::new();
+    match q.view {
+        View::All => {}
+        View::Starred => clauses.push("a.starred = 1".into()),
+        View::Feed { id } => {
+            clauses.push("a.feed_id = ?".into());
+            args.push(Value::Integer(id));
+        }
+        View::Folder { id } => {
+            clauses.push("f.folder_id = ?".into());
+            args.push(Value::Integer(id));
+        }
+    }
+    for word in q.search.split_whitespace() {
+        let pattern = format!(
+            "%{}%",
+            word.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        clauses.push(
+            "(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR COALESCE(f.custom_title, f.title) LIKE ? ESCAPE '\\')"
+                .into(),
+        );
+        for _ in 0..3 {
+            args.push(Value::Text(pattern.clone()));
+        }
+    }
+    let sql = if clauses.is_empty() {
+        "1".to_string()
+    } else {
+        clauses.join(" AND ")
+    };
+    (sql, args)
+}
+
+pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<ArticleRow>> {
+    let (mut sql_filter, mut args) = filter(q);
+    if q.unread_only {
+        match q.keep {
+            Some(keep) => {
+                sql_filter = format!("({sql_filter}) AND (a.read = 0 OR a.id = ?)");
+                args.push(rusqlite::types::Value::Integer(keep));
+            }
+            None => sql_filter = format!("({sql_filter}) AND a.read = 0"),
+        }
+    }
+    let sql = format!(
+        "SELECT a.id, a.feed_id, COALESCE(f.custom_title, f.title), a.title, substr(a.summary, 1, {LIST_SUMMARY_CHARS}),
+                a.url, a.published, a.read, a.starred
+         FROM articles a JOIN feeds f ON f.id = a.feed_id
+         WHERE {sql_filter}
+         ORDER BY a.published DESC, a.id DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args), |r| {
+        Ok(ArticleRow {
+            id: r.get(0)?,
+            feed_id: r.get(1)?,
+            feed_title: r.get(2)?,
+            title: r.get(3)?,
+            summary: r.get(4)?,
+            url: r.get(5)?,
+            published: r.get(6)?,
+            read: r.get(7)?,
+            starred: r.get(8)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// One article for the reader, with the feed's HTML as stored.
+#[derive(Debug)]
+pub struct ArticleFull {
+    pub id: i64,
+    pub feed_id: i64,
+    pub feed_title: String,
+    pub site_url: Option<String>,
+    pub title: String,
+    pub url: Option<String>,
+    pub author: Option<String>,
+    pub content: String,
+    pub summary: String,
+    pub published: i64,
+    pub read: bool,
+    pub starred: bool,
+}
+
+pub fn article(conn: &Connection, id: i64) -> DbResult<Option<ArticleFull>> {
+    conn.query_row(
+        "SELECT a.id, a.feed_id, COALESCE(f.custom_title, f.title), f.site_url, a.title, a.url, a.author,
+                a.content, a.summary, a.published, a.read, a.starred
+         FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.id = ?1",
+        [id],
+        |r| {
+            Ok(ArticleFull {
+                id: r.get(0)?,
+                feed_id: r.get(1)?,
+                feed_title: r.get(2)?,
+                site_url: r.get(3)?,
+                title: r.get(4)?,
+                url: r.get(5)?,
+                author: r.get(6)?,
+                content: r.get(7)?,
+                summary: r.get(8)?,
+                published: r.get(9)?,
+                read: r.get(10)?,
+                starred: r.get(11)?,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn set_read(conn: &mut Connection, ids: &[i64], read: bool) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare("UPDATE articles SET read = ?2 WHERE id = ?1")?;
+        for id in ids {
+            stmt.execute(params![id, read])?;
+        }
+    }
+    tx.commit()
+}
+
+pub fn set_starred(conn: &Connection, id: i64, starred: bool) -> DbResult<()> {
+    conn.execute(
+        "UPDATE articles SET starred = ?2 WHERE id = ?1",
+        params![id, starred],
+    )?;
+    Ok(())
+}
+
+/// Marks what the query lists as read; returns the ids that were unread, so
+/// the toast's 元に戻す can put back exactly those.
+pub fn mark_all_read(conn: &mut Connection, q: &ArticleQuery) -> DbResult<Vec<i64>> {
+    let (sql_filter, args) = filter(q);
+    let ids: Vec<i64> = {
+        let sql = format!(
+            "SELECT a.id FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE ({sql_filter}) AND a.read = 0"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(args), |r| r.get(0))?;
+        rows.collect::<DbResult<_>>()?
+    };
+    set_read(conn, &ids, true)?;
+    Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn art(guid: &str, title: &str, published: i64) -> NewArticle {
+        NewArticle {
+            guid: guid.into(),
+            url: Some(format!("https://example.com/{guid}")),
+            title: title.into(),
+            author: None,
+            summary: format!("{title} の要約"),
+            content: format!("<p>{title}</p>"),
+            published: Some(published),
+        }
+    }
+
+    fn all() -> ArticleQuery {
+        ArticleQuery {
+            view: View::All,
+            unread_only: false,
+            search: String::new(),
+            keep: None,
+        }
+    }
+
+    #[test]
+    fn stores_new_articles_once_and_keeps_read_state() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        let first = [art("a", "A", 1000), art("b", "B", 2000)];
+        assert_eq!(store_articles(&mut conn, feed, &first).unwrap(), 2);
+
+        let rows = query_articles(&conn, &all()).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["B", "A"]
+        );
+        set_read(&mut conn, &[rows[0].id], true).unwrap();
+
+        // The same articles again, one with a corrected title, plus a new one.
+        let again = [
+            art("a", "A", 1000),
+            art("b", "B（訂正）", 2000),
+            art("c", "C", 3000),
+        ];
+        assert_eq!(store_articles(&mut conn, feed, &again).unwrap(), 1);
+        let rows = query_articles(&conn, &all()).unwrap();
+        let b = rows.iter().find(|r| r.title == "B（訂正）").unwrap();
+        assert!(b.read, "an update must not mark it unread again");
+        assert_eq!(sidebar(&conn).unwrap().unread, 2);
+    }
+
+    #[test]
+    fn future_dates_are_clamped() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        store_articles(&mut conn, feed, &[art("x", "X", i64::MAX / 2)]).unwrap();
+        let rows = query_articles(&conn, &all()).unwrap();
+        assert!(rows[0].published <= now_ms());
+    }
+
+    #[test]
+    fn views_unread_only_keep_and_search() {
+        let mut conn = open_in_memory().unwrap();
+        let folder = create_folder(&conn, "技術").unwrap();
+        let tech = add_feed(&conn, "https://a.example/feed", "Tech", None, Some(folder)).unwrap();
+        let news = add_feed(&conn, "https://b.example/feed", "News", None, None).unwrap();
+        store_articles(
+            &mut conn,
+            tech,
+            &[art("1", "Rust 2.0", 1), art("2", "100% safe_code", 2)],
+        )
+        .unwrap();
+        store_articles(&mut conn, news, &[art("3", "天気", 3)]).unwrap();
+
+        let q = |view, unread_only, search: &str, keep| ArticleQuery {
+            view,
+            unread_only,
+            search: search.into(),
+            keep,
+        };
+        assert_eq!(
+            query_articles(&conn, &q(View::Folder { id: folder }, false, "", None))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            query_articles(&conn, &q(View::Feed { id: news }, false, "", None))
+                .unwrap()
+                .len(),
+            1
+        );
+        // LIKE wildcards in the search are literal.
+        assert_eq!(
+            query_articles(&conn, &q(View::All, false, "100%", None))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            query_articles(&conn, &q(View::All, false, "e%c", None))
+                .unwrap()
+                .len(),
+            0
+        );
+        // Every word must match; the feed's name counts.
+        assert_eq!(
+            query_articles(&conn, &q(View::All, false, "tech rust", None))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let id = query_articles(&conn, &q(View::All, false, "天気", None)).unwrap()[0].id;
+        set_read(&mut conn, &[id], true).unwrap();
+        assert_eq!(
+            query_articles(&conn, &q(View::All, true, "", None))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            query_articles(&conn, &q(View::All, true, "", Some(id)))
+                .unwrap()
+                .len(),
+            3
+        );
+
+        set_starred(&conn, id, true).unwrap();
+        assert_eq!(
+            query_articles(&conn, &q(View::Starred, false, "", None))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(sidebar(&conn).unwrap().starred, 1);
+    }
+
+    #[test]
+    fn mark_all_read_returns_what_it_changed() {
+        let mut conn = open_in_memory().unwrap();
+        let a = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
+        let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
+        store_articles(&mut conn, a, &[art("1", "one", 1), art("2", "two", 2)]).unwrap();
+        store_articles(&mut conn, b, &[art("3", "three", 3)]).unwrap();
+        let one = query_articles(&conn, &all())
+            .unwrap()
+            .into_iter()
+            .find(|r| r.title == "one")
+            .unwrap();
+        set_read(&mut conn, &[one.id], true).unwrap();
+
+        let q = ArticleQuery {
+            view: View::Feed { id: a },
+            ..all()
+        };
+        let changed = mark_all_read(&mut conn, &q).unwrap();
+        assert_eq!(changed.len(), 1, "only the unread one");
+        let s = sidebar(&conn).unwrap();
+        assert_eq!(s.unread, 1);
+        assert_eq!(s.feeds.iter().find(|f| f.id == b).unwrap().unread, 1);
+
+        set_read(&mut conn, &changed, false).unwrap();
+        assert_eq!(sidebar(&conn).unwrap().unread, 2);
+    }
+
+    #[test]
+    fn purge_keeps_what_the_feed_still_lists() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        store_articles(
+            &mut conn,
+            feed,
+            &[
+                art("old", "old", 1),
+                art("starred", "starred", 2),
+                art("unread", "unread", 3),
+            ],
+        )
+        .unwrap();
+        let rows = query_articles(&conn, &all()).unwrap();
+        let id = |t: &str| rows.iter().find(|r| r.title == t).unwrap().id;
+        set_read(&mut conn, &[id("old"), id("starred")], true).unwrap();
+        set_starred(&conn, id("starred"), true).unwrap();
+
+        // Seen long ago: the feed no longer lists them.
+        conn.execute("UPDATE articles SET seen_at = 0", []).unwrap();
+        assert_eq!(purge(&conn, 0).unwrap(), 0, "0 keeps everything");
+        assert_eq!(purge(&conn, 30).unwrap(), 1);
+        let left: Vec<String> = query_articles(&conn, &all())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.title)
+            .collect();
+        assert_eq!(left, ["unread", "starred"]);
+
+        // A 304 marks everything as seen now.
+        set_read(&mut conn, &[id("unread")], true).unwrap();
+        feed_unchanged(&conn, feed).unwrap();
+        assert_eq!(purge(&conn, 30).unwrap(), 0);
+    }
+
+    #[test]
+    fn folders_and_feeds() {
+        let mut conn = open_in_memory().unwrap();
+        let folder = folder_named(&conn, "ニュース").unwrap();
+        assert_eq!(folder_named(&conn, "ニュース").unwrap(), folder);
+        let feed = add_feed(
+            &conn,
+            "https://example.com/feed",
+            "Example",
+            None,
+            Some(folder),
+        )
+        .unwrap();
+        store_articles(&mut conn, feed, &[art("1", "one", 1)]).unwrap();
+        assert_eq!(sidebar(&conn).unwrap().folders[0].unread, 1);
+
+        rename_feed(&conn, feed, "  私の名前 ").unwrap();
+        feed_fetched(
+            &conn,
+            feed,
+            Some("New feed title"),
+            None,
+            Some("\"e1\""),
+            None,
+        )
+        .unwrap();
+        assert_eq!(sidebar(&conn).unwrap().feeds[0].title, "私の名前");
+        rename_feed(&conn, feed, "").unwrap();
+        assert_eq!(sidebar(&conn).unwrap().feeds[0].title, "New feed title");
+        assert_eq!(
+            feed_targets(&conn, None).unwrap()[0].etag.as_deref(),
+            Some("\"e1\"")
+        );
+
+        delete_folder(&conn, folder).unwrap();
+        assert_eq!(sidebar(&conn).unwrap().feeds[0].folder_id, None);
+
+        let export = feeds_for_export(&conn).unwrap();
+        assert_eq!(export.len(), 1);
+        delete_feed(&conn, feed).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM articles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "articles go with their feed");
+    }
+
+    #[test]
+    fn reopening_keeps_the_data() {
+        let dir = std::env::temp_dir().join(format!("feedability-test-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("feedability.db");
+        let conn = open(&path).unwrap();
+        add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        close(conn);
+        let conn = open(&path).unwrap();
+        assert_eq!(sidebar(&conn).unwrap().feeds.len(), 1);
+        close(conn);
+        assert!(
+            !dir.join("feedability.db-wal").exists()
+                || std::fs::metadata(dir.join("feedability.db-wal"))
+                    .unwrap()
+                    .len()
+                    == 0
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
