@@ -530,7 +530,10 @@ mod tests {
             absolute("https://a.example/blog/feed", "../i.png").as_deref(),
             Some("https://a.example/i.png")
         );
-        assert_eq!(absolute("https://a.example/", "data:image/png;base64,AA=="), None);
+        assert_eq!(
+            absolute("https://a.example/", "data:image/png;base64,AA=="),
+            None
+        );
         assert_eq!(absolute("https://a.example/", "  "), None);
     }
 

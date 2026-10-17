@@ -509,8 +509,7 @@ pub fn set_icon(conn: &Connection, id: i64, icon: Option<&str>) -> DbResult<()> 
 
 /// Every feed's icon (a data: URL), for the sidebar and the list.
 pub fn icons(conn: &Connection) -> DbResult<Vec<(i64, String)>> {
-    let mut stmt =
-        conn.prepare("SELECT id, icon FROM feeds WHERE icon IS NOT NULL ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id, icon FROM feeds WHERE icon IS NOT NULL ORDER BY id")?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     rows.collect()
 }
@@ -1066,7 +1065,11 @@ mod tests {
         store_articles(
             &mut conn,
             feed,
-            &[art("a", "A", 1000), art("b", "B", 2000), art("c", "C", 3000)],
+            &[
+                art("a", "A", 1000),
+                art("b", "B", 2000),
+                art("c", "C", 3000),
+            ],
         )
         .unwrap();
         fn titles(conn: &Connection, q: &ArticleQuery) -> Vec<String> {
@@ -1305,7 +1308,15 @@ mod tests {
         let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
         store_articles(&mut conn, a, &[art("1", "one", 1)]).unwrap();
         rename_feed(&conn, a, "私の名前").unwrap();
-        feed_fetched(&conn, a, None, None, Some("\"e1\""), Some("Mon, 01 Jan 2024")).unwrap();
+        feed_fetched(
+            &conn,
+            a,
+            None,
+            None,
+            Some("\"e1\""),
+            Some("Mon, 01 Jan 2024"),
+        )
+        .unwrap();
         set_icon_urls(&conn, a, Some("https://a.example/icon.png"), None).unwrap();
         set_icon(&conn, a, Some("data:image/png;base64,AA==")).unwrap();
         feed_failed(&conn, a, "見つかりません（HTTP 404）").unwrap();
@@ -1342,8 +1353,13 @@ mod tests {
         let conn = open_in_memory().unwrap();
         let a = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
         let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
-        set_icon_urls(&conn, a, Some("https://a.example/i.png"), Some("https://a.example/l.png"))
-            .unwrap();
+        set_icon_urls(
+            &conn,
+            a,
+            Some("https://a.example/i.png"),
+            Some("https://a.example/l.png"),
+        )
+        .unwrap();
         let day = 86_400_000;
         let cutoff = now_ms() - 30 * day;
         let todo = feeds_needing_icon(&conn, cutoff).unwrap();
