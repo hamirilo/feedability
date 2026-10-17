@@ -1,6 +1,6 @@
 # ADR-0004: 記事を 127.0.0.1 の stockroom へ送る
 
-**状態**：提案
+**状態**：採用
 **日付**：2026-10-17
 
 ## 状況
@@ -35,8 +35,8 @@ stockroom には、ブラウザ拡張から画像やファイルを受け取る�
 
 ## 影響
 
-- 採用したら、`decisions/project-context.md` の「外との接続」に「ユーザーが選んだ記事を 127.0.0.1:41620 の stockroom へ送る」を足し、README の「ネットワーク」にも書く
-- ARCHITECTURE.md の「外への通信は `fetch.rs` だけ」の横に、127.0.0.1 の stockroom へは `stockroom.rs` だけと書く
+- `decisions/project-context.md` の「外との接続」と「逸脱」に足した
+- 実装するときに、README の「ネットワーク」に stockroom への送信を書き、ARCHITECTURE.md の「外への通信は `fetch.rs` だけ」の横に、127.0.0.1 の stockroom へは `stockroom.rs` だけと書く
 - stockroom 側で、拡張以外のアプリも接続の許可を求められるようにする変更が要る（stockroom の `docs/FROM_APPS.md`）。それまでは段階 1（Markdown でコピー）だけを出す
 - stockroom の受付のポートや API が変わったら、こちらも合わせる。`GET /info` の `app` が `stockroom` であることを確かめてから送る
 

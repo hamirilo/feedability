@@ -1,6 +1,6 @@
 # stockroom へ送る
 
-**状態**：計画（未実装）。ロードマップのフェーズ 5。通信の決定は [ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)（提案）。
+**状態**：計画（未実装）。ロードマップのフェーズ 5。通信の決定は [ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)（採用）。
 受け取る側の計画は stockroom の `docs/FROM_APPS.md`。
 
 困っていること：フィードの記事は流れていくもの。Feedability は古い記事を消す（`db::purge`）し、元のページも書き換わったり消えたりする。
@@ -65,7 +65,10 @@ Feedability はフロー、stockroom はストックと役割を分け、**取�
 - 画像は Markdown の画像にせず `[画像](URL)` のリンクにする（stockroom の画面は外の画像を読まない）
 - 本文が要約だけの記事は要約のまま。フェーズ 4（全文取得）が入ったら、全文があればそちらを使う
 - ファイル名に使えない文字（`/ \ : * ? " < > |` と制御文字）は `_` にし、長さは 100 文字までにする。タイトルが無い記事は `記事.md`
-- HTML から Markdown への変換は crate を 1 つ足す。候補は `htmd`（Apache-2.0）。`html2md` は GPL なので使わない。Recommendations の健全性チェックにかけ、決めたものを PR に書く
+- HTML から Markdown への変換は **`htmd`**（Apache-2.0）を足す。表やネストしたリストも崩さずに残せるため。画像は変換の規則を差し替えて `[画像](URL)` にする
+  - html5ever の 3 つ目の版（0.38。ammonia は 0.40、Tauri の `dom_query` は 0.39）と `markup5ever_rcdom` が入り、ビルドが少し重くなる。それを承知で選んだ
+  - Recommendations の健全性チェックにかけ、結果を実装の PR に書く
+  - 比べて外したもの：`html2md`（GPL-3.0）、`fast_html2md`（0.0.x で、正規表現で変換するので崩れた HTML に弱い）、`html2text`（Markdown でなく整形したテキストになる）、`dom_query` の上に自前で書く（依存は増えないが、変換を自分で保守する）
 
 ## あとで
 
