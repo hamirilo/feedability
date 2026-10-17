@@ -47,8 +47,8 @@ fetch.rs ──bytes──▶ feed.rs ──NewArticle──▶ db.rs（articles
 ## 一覧と状態
 
 - 一覧は問い合わせの結果をそのままストアに置く。既読・スターの変更は、表示中の行とひらいている記事だけその場で書き換え、一覧は取り直さない。「未読のみ」で読んだ記事が手元から消えないように、問い合わせには開いている記事の id（`keep`）も渡す
-- 行は高さが一定（92px）で、`@tanstack/react-virtual` で描く
-- 未読のみ・フォルダの開閉は表示の好みとして `localStorage`（`feedability.prefs`）に置く
+- 行はレイアウトごとに高さが一定（標準と画像付き 92px、コンパクト 34px。[LIST_LAYOUT.md](LIST_LAYOUT.md)）で、`@tanstack/react-virtual` で描く。画像付きの縮小版は見えている行の分だけ Rust が取り、縮めてから `data:` URL で渡す
+- 未読のみ・並び順・一覧のレイアウト・フォルダの開閉は表示の好みとして `localStorage`（`feedability.prefs`）に置く
 
 ## 操作
 

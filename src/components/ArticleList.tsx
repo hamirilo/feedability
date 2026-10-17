@@ -1,16 +1,19 @@
 /**
- * The articles of the open view, newest first (or oldest, 古い順). Rows have one height so the
- * list can be virtual (thousands of articles stay smooth). The controls above
- * it are the same in every view and keep their places (docs/UI.md): what
- * can't be used now is greyed out, not removed.
+ * The articles of the open view, newest first (or oldest, 古い順). Rows have
+ * one height per layout (標準 / コンパクト / 画像付き, docs/LIST_LAYOUT.md) so
+ * the list can be virtual (thousands of articles stay smooth). The controls
+ * above it are the same in every view and layout and keep their places
+ * (docs/UI.md): what can't be used now is greyed out, not removed.
  */
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, CheckCheck, Clock, Search, Star, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, CheckCheck, Clock, LayoutList, List, Rows3, Search, Star, X, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { filtersUnread } from "../lib/api";
+import { filtersUnread, type ArticleRow } from "../lib/api";
 import { runCommand } from "../lib/commands";
 import { listDate } from "../lib/format";
 import { composing } from "../lib/ime";
+import { LIST_LAYOUTS, rowHeight, type ListLayout } from "../lib/listLayout";
+import { cachedThumb, wantThumb } from "../lib/thumbs";
 import { withKey } from "../lib/shortcuts";
 import { dragRegion } from "../lib/titleBar";
 import { useStore, viewTitle } from "../store";
@@ -18,7 +21,96 @@ import { commandItem, ContextMenu, type MenuState } from "./ContextMenu";
 import { FeedIcon } from "./FeedIcon";
 import { ResizeHandle, usePaneWidths } from "./ResizeHandle";
 
-const ROW = 92;
+const LAYOUT_ICONS: Record<ListLayout, LucideIcon> = { standard: Rows3, compact: List, thumbs: LayoutList };
+
+/** 標準 / コンパクト / 画像付き, at the end of the title row: the row below keeps its controls where they were. */
+function LayoutSegment() {
+  const layout = useStore((s) => s.listLayout);
+  const setLayout = useStore((s) => s.setListLayout);
+  return (
+    <div className="flex shrink-0 rounded-md bg-bg p-0.5" role="radiogroup" aria-label="一覧のレイアウト">
+      {LIST_LAYOUTS.map((l) => {
+        const Icon = LAYOUT_ICONS[l.id];
+        const on = layout === l.id;
+        return (
+          <button
+            key={l.id}
+            role="radio"
+            aria-checked={on}
+            aria-label={l.label}
+            title={l.label}
+            onClick={() => setLayout(l.id)}
+            className={`rounded px-1.5 py-0.5 ${on ? "bg-raised text-fg shadow" : "text-dim hover:text-fg"}`}
+          >
+            <Icon size={13} />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** A row's picture in 画像付き: asked for while the row is drawn, a grey square until (or unless) it comes. */
+function Thumb({ url }: { url: string }) {
+  const [data, setData] = useState(() => cachedThumb(url));
+  useEffect(() => {
+    const known = cachedThumb(url);
+    setData(known);
+    if (known !== undefined) return;
+    return wantThumb(url, setData);
+  }, [url]);
+  return (
+    <div className="h-16 w-16 shrink-0 overflow-hidden rounded-md bg-hover/70">
+      {data && <img src={data} alt="" draggable={false} className="h-full w-full object-cover" />}
+    </div>
+  );
+}
+
+/** The dot, the icon and name of the feed, the marks and the date. */
+function MetaLine({ a }: { a: ArticleRow }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] text-dim">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.read ? "bg-transparent" : "bg-accent"}`} aria-label={a.read ? undefined : "未読"} />
+      <FeedIcon feedId={a.feedId} size={12} />
+      <span className="min-w-0 flex-1 truncate">{a.feedTitle}</span>
+      {a.later && <Clock size={11} className="shrink-0 text-accent" aria-label="あとで読む" />}
+      {a.starred && <Star size={11} className="shrink-0 fill-current text-star" />}
+      <span className="shrink-0 tabular-nums">{listDate(a.published)}</span>
+    </div>
+  );
+}
+
+function RowBody({ a, layout }: { a: ArticleRow; layout: ListLayout }) {
+  if (layout === "compact") {
+    // The title only: the feed is its icon (and the tooltip).
+    return (
+      <div className="flex h-full items-center gap-1.5" title={a.feedTitle}>
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.read ? "bg-transparent" : "bg-accent"}`} aria-label={a.read ? undefined : "未読"} />
+        <FeedIcon feedId={a.feedId} size={12} />
+        <span className={`min-w-0 flex-1 truncate ${a.read ? "text-fg/70" : "font-semibold"}`}>{a.title}</span>
+        {a.later && <Clock size={11} className="shrink-0 text-accent" aria-label="あとで読む" />}
+        {a.starred && <Star size={11} className="shrink-0 fill-current text-star" />}
+        <span className="shrink-0 text-[11px] tabular-nums text-dim">{listDate(a.published)}</span>
+      </div>
+    );
+  }
+  const text = (
+    <div className="min-w-0 flex-1">
+      <MetaLine a={a} />
+      <div className={`mt-0.5 truncate ${a.read ? "text-fg/70" : "font-semibold"}`}>{a.title}</div>
+      <div className="mt-0.5 line-clamp-2 text-xs leading-snug text-dim">{a.summary}</div>
+    </div>
+  );
+  if (layout === "thumbs" && a.thumbUrl) {
+    return (
+      <div className="flex h-full items-center gap-2.5">
+        <Thumb url={a.thumbUrl} />
+        {text}
+      </div>
+    );
+  }
+  return text;
+}
 
 function Segment() {
   const unreadOnly = useStore((s) => s.unreadOnly);
@@ -145,6 +237,8 @@ export function ArticleList() {
   const selectedId = useStore((s) => s.selectedId);
   const select = useStore((s) => s.select);
   const title = useStore(viewTitle);
+  const layout = useStore((s) => s.listLayout);
+  const row = rowHeight(layout);
   const canMarkAll = useStore((s) => s.articles.some((a) => !a.read));
   const width = usePaneWidths().list;
   const scroller = useRef<HTMLDivElement>(null);
@@ -153,15 +247,20 @@ export function ArticleList() {
   const virtual = useVirtualizer({
     count: articles.length,
     getScrollElement: () => scroller.current,
-    estimateSize: () => ROW,
+    estimateSize: () => row,
     overscan: 8,
   });
+
+  // Another layout: the rows have another height (the selected one is brought back into sight below).
+  useEffect(() => {
+    virtual.measure();
+  }, [row, virtual]);
 
   // The selected row stays in sight when moving with J / K.
   useEffect(() => {
     const i = articles.findIndex((a) => a.id === selectedId);
     if (i >= 0) virtual.scrollToIndex(i, { align: "auto" });
-  }, [selectedId, articles, virtual]);
+  }, [selectedId, articles, virtual, row]);
 
   // Another view, filter or order starts at the top.
   const view = useStore((s) => s.view);
@@ -199,6 +298,7 @@ export function ArticleList() {
         <div className="flex h-7 items-center gap-2">
           <h1 className="min-w-0 flex-1 truncate text-[14px] font-semibold">{title}</h1>
           <span className="shrink-0 text-xs tabular-nums text-dim">{articles.length} 件</span>
+          <LayoutSegment />
         </div>
         <div className="flex items-center gap-2 py-2">
           <Segment />
@@ -228,24 +328,12 @@ export function ArticleList() {
                 aria-selected={selected}
                 onClick={() => void select(a.id)}
                 onContextMenu={(e) => rowMenu(e, a.id)}
-                className={`absolute inset-x-0 cursor-default border-b border-line/60 px-3 py-2 ${
+                className={`absolute inset-x-0 cursor-default border-b border-line/60 px-3 ${layout === "compact" ? "" : "py-2"} ${
                   selected ? "bg-accent/25" : "hover:bg-hover/50"
                 }`}
-                style={{ height: ROW, transform: `translateY(${v.start}px)` }}
+                style={{ height: row, transform: `translateY(${v.start}px)` }}
               >
-                <div className="flex items-center gap-1.5 text-[11px] text-dim">
-                  <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${a.read ? "bg-transparent" : "bg-accent"}`}
-                    aria-label={a.read ? undefined : "未読"}
-                  />
-                  <FeedIcon feedId={a.feedId} size={12} />
-                  <span className="min-w-0 flex-1 truncate">{a.feedTitle}</span>
-                  {a.later && <Clock size={11} className="shrink-0 text-accent" aria-label="あとで読む" />}
-                  {a.starred && <Star size={11} className="shrink-0 fill-current text-star" />}
-                  <span className="shrink-0 tabular-nums">{listDate(a.published)}</span>
-                </div>
-                <div className={`mt-0.5 truncate ${a.read ? "text-fg/70" : "font-semibold"}`}>{a.title}</div>
-                <div className="mt-0.5 line-clamp-2 text-xs leading-snug text-dim">{a.summary}</div>
+                <RowBody a={a} layout={layout} />
               </div>
             );
           })}

@@ -12,6 +12,7 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
 import { command, isEnabled, labelOf, runCommand } from "./commands";
+import { LIST_LAYOUTS } from "./listLayout";
 import { warn } from "./log";
 import { comboText, isMac } from "./shortcuts";
 import { useStore, type State } from "../store";
@@ -150,7 +151,7 @@ async function build(): Promise<Menu> {
     cmd("list.markBelowRead"),
   ]);
 
-  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly"), cmd("list.oldestFirst"), sep(), cmd("view.textBigger"), cmd("view.textSmaller"), cmd("view.textReset")]);
+  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly"), cmd("list.oldestFirst"), submenu("一覧のレイアウト", LIST_LAYOUTS.map((l) => cmd(`list.layout.${l.id}`))), sep(), cmd("view.textBigger"), cmd("view.textSmaller"), cmd("view.textReset")]);
 
   const windowMenu = isMac
     ? [

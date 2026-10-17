@@ -286,9 +286,26 @@ pub async fn mark_all_read(state: State<'_, AppState>, query: ArticleQuery) -> C
 /// from the WebView, and only real images get through (`fetch::image_type`).
 #[tauri::command]
 pub async fn image_data_url(url: String) -> CmdResult<String> {
-    use base64::Engine;
+    let (body, mime) = fetch_image(&url).await?;
+    Ok(data_url(mime, &body))
+}
+
+/// The picture of a row in the list's 画像付き layout: an article image as
+/// `image_data_url` gets it, made small first (thumb.rs) off the async threads.
+#[tauri::command]
+pub async fn thumbnail_data_url(url: String) -> CmdResult<String> {
+    let (body, mime) = fetch_image(&url).await?;
+    let (mime, small) =
+        tauri::async_runtime::spawn_blocking(move || crate::thumb::make(&body, mime))
+            .await
+            .map_err(err)??;
+    Ok(data_url(mime, &small))
+}
+
+/// An image's bytes and type, checked by its first bytes.
+async fn fetch_image(url: &str) -> CmdResult<(Vec<u8>, &'static str)> {
     let res = match fetch::get(
-        &url,
+        url,
         None,
         None,
         "image/avif,image/webp,image/*;q=0.8",
@@ -300,10 +317,15 @@ pub async fn image_data_url(url: String) -> CmdResult<String> {
         Outcome::NotModified => return Err("画像を取得できませんでした".into()),
     };
     let mime = fetch::image_type(&res.body).ok_or("画像ではありません")?;
-    Ok(format!(
+    Ok((res.body, mime))
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    use base64::Engine;
+    format!(
         "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(&res.body)
-    ))
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
 }
 
 /// Links in articles open in the OS's browser, never in the app's window.

@@ -5,6 +5,7 @@ pub mod fetch;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
+pub mod thumb;
 
 use commands::*;
 use tauri::Manager;
@@ -117,6 +118,7 @@ pub fn run() {
             set_later,
             mark_all_read,
             image_data_url,
+            thumbnail_data_url,
             open_url,
             add_feed,
             get_feed_info,

@@ -41,6 +41,8 @@ fn main() {
                 summary: "テストの要約。".repeat(20),
                 content: "<p>テストの本文。</p>".repeat(30),
                 published: Some(now - (i * feeds + f) as i64 * 60_000),
+                // Two in three with a picture, for the 画像付き layout.
+                thumb_url: (i % 3 != 0).then(|| format!("https://seed.example/{f}/{i}.jpg")),
             })
             .collect();
         db::store_articles(&mut conn, id, &articles).unwrap();

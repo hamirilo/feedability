@@ -80,6 +80,8 @@ export interface ArticleRow {
   starred: boolean;
   /** In あとで読む. */
   later: boolean;
+  /** The picture for the 画像付き layout (`thumbnailDataUrl`); null: none. */
+  thumbUrl: string | null;
 }
 
 export interface Article {
@@ -154,6 +156,8 @@ export const api = {
   /** Returns the ids it marked, for 元に戻す. */
   markAllRead: (query: ArticleQuery) => invoke<number[]>("mark_all_read", { query }),
   imageDataUrl: (url: string) => invoke<string>("image_data_url", { url }),
+  /** An article picture made small for the list (lib/thumbs.ts). */
+  thumbnailDataUrl: (url: string) => invoke<string>("thumbnail_data_url", { url }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 
   addFeed: (url: string, folderId: number | null) => invoke<Added>("add_feed", { url, folderId }),

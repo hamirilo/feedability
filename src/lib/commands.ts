@@ -32,6 +32,7 @@ import {
   renameFolderDialog,
 } from "./actions";
 import { api, filtersUnread } from "./api";
+import { LIST_LAYOUTS } from "./listLayout";
 import { DEFAULT_TEXT_SIZE, TEXT_SIZES } from "./reading";
 import { checkForUpdate } from "./update";
 import { useStore, type State } from "../store";
@@ -197,6 +198,16 @@ export const COMMANDS: Command[] = [
     checked: (s) => s.oldestFirst,
     run: (s) => s.setOldestFirst(!s.oldestFirst),
   },
+  // 表示 › 一覧のレイアウト (docs/LIST_LAYOUT.md): list.layout.standard / .compact / .thumbs.
+  ...LIST_LAYOUTS.map(
+    (l): Command => ({
+      id: `list.layout.${l.id}`,
+      title: `一覧のレイアウト：${l.label}`,
+      label: () => l.label,
+      checked: (s) => s.listLayout === l.id,
+      run: (s) => s.setListLayout(l.id),
+    }),
+  ),
   {
     id: "list.markAllRead",
     title: "一覧をすべて既読にする",

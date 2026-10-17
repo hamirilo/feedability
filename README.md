@@ -65,7 +65,7 @@ Windows は ⌘ → Ctrl、⌥ → Alt。1 文字のキーは検索欄などの�
 アプリが通信するのは次だけ。テレメトリは送らない（[ADR-0001](decisions/adr-0001-fetching-feeds.md)）。
 
 - 購読したフィード（追加するときは、入力したサイトのページも。フィードを探すため）
-- 記事の本文の画像。ウィンドウの中から外へは通信せず、アプリが取得して渡す（JPEG・PNG・GIF・WebP・AVIF・BMP・ICO。SVG は表示しない）
+- 記事の本文の画像と、一覧の「画像付き」の縮小版（見えている行の分だけ。アプリが小さくしてから渡す）。ウィンドウの中から外へは通信せず、アプリが取得して渡す（JPEG・PNG・GIF・WebP・AVIF・BMP・ICO。SVG は表示しない）
 - 購読したフィードのサイトのアイコン（フィード自身のアイコン → ページの `<link rel="icon">` → `/favicon.ico` → フィードのロゴの順。30 日に 1 回まで、256 KB まで、SVG は使わない。[docs/FAVICON.md](docs/FAVICON.md)）
 - アップデートの確認（GitHub Releases）
 
