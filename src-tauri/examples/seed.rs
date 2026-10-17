@@ -55,6 +55,7 @@ fn main() {
         unread_only,
         search: search.into(),
         keep: None,
+        oldest_first: false,
     };
     time("all", q(View::All, false, ""));
     time("unread", q(View::All, true, ""));
