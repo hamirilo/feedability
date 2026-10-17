@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "feedability"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ammonia",
  "base64 0.22.1",
