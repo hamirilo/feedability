@@ -1,0 +1,73 @@
+[package]
+name = "feedability"
+version = "0.1.0"
+description = "A local RSS / Atom feed reader"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "feedability_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+# The window opens at the size and place it had when last closed.
+tauri-plugin-window-state = "2"
+# A second launch brings up the running app's window instead (lib.rs).
+tauri-plugin-single-instance = "2"
+# Warnings and errors into a file in the app's log folder (lib.rs, src/lib/log.ts).
+tauri-plugin-log = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Feeds: parsing RSS 0.9x / 1.0 / 2.0, Atom and JSON Feed (feed.rs).
+feed-rs = "3"
+# Reading OPML (opml.rs). Already in the tree through feed-rs.
+quick-xml = "0.42"
+# Article HTML made safe to show in the window (sanitize.rs).
+ammonia = "4"
+url = "2"
+# Fetching feeds and article images (fetch.rs). The updater already brings
+# reqwest with rustls on ring, so these add next to nothing to the build;
+# gzip because most feed servers compress.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Article images handed to the reader as data: URLs (commands.rs `image_data_url`).
+base64 = "0.22"
+# Several feeds fetched at a time while refreshing (fetch.rs).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Writing a Shift_JIS feed for the tests (feed-rs reads it through quick-xml).
+encoding_rs = "0.8"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+# Thin LTO with the default 16 codegen units instead of fat LTO + 1 unit:
+# measured on stockroom (an M-series Mac), a rebuild with cached dependencies
+# drops from 93 s to 36 s. The binary grows about +0.5 MB once compressed.
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = true
+
+# System proxy lookup (PAC) for feeds and the updater, see proxy.rs.
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+
+[target."cfg(target_os = \"macos\")".dependencies]
+core-foundation-sys = "0.8"
+
