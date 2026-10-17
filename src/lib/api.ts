@@ -9,6 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type View =
   | { kind: "all" }
   | { kind: "starred" }
+  | { kind: "later" }
   | { kind: "feed"; id: number }
   | { kind: "folder"; id: number };
 
@@ -35,6 +36,7 @@ export interface Sidebar {
   feeds: FeedRow[];
   unread: number;
   starred: number;
+  later: number;
 }
 
 export interface ArticleQuery {
@@ -55,6 +57,8 @@ export interface ArticleRow {
   published: number;
   read: boolean;
   starred: boolean;
+  /** In あとで読む. */
+  later: boolean;
 }
 
 export interface Article {
@@ -70,7 +74,10 @@ export interface Article {
   published: number;
   read: boolean;
   starred: boolean;
+  later: boolean;
 }
+
+export type ThemeSetting = "system" | "light" | "dark";
 
 export interface AppSettings {
   autoUpdate: boolean;
@@ -78,6 +85,7 @@ export interface AppSettings {
   refreshMinutes: number;
   /** 0 = keep read articles for good. */
   keepDays: number;
+  theme: ThemeSetting;
 }
 
 export interface Added {
@@ -109,6 +117,7 @@ export const api = {
   getArticle: (id: number) => invoke<Article>("get_article", { id }),
   setRead: (ids: number[], read: boolean) => invoke<void>("set_read", { ids, read }),
   setStarred: (id: number, starred: boolean) => invoke<void>("set_starred", { id, starred }),
+  setLater: (ids: number[], later: boolean) => invoke<void>("set_later", { ids, later }),
   /** Returns the ids it marked, for 元に戻す. */
   markAllRead: (query: ArticleQuery) => invoke<number[]>("mark_all_read", { query }),
   imageDataUrl: (url: string) => invoke<string>("image_data_url", { url }),
@@ -135,6 +144,9 @@ export const api = {
   setAppSettings: (settings: AppSettings) => invoke<AppSettings>("set_app_settings", { settings }),
   revealLog: () => invoke<void>("reveal_log"),
 };
+
+/** Whether 未読のみ applies (not to スター付き and あとで読む; db.rs `View::filters_unread`). */
+export const filtersUnread = (v: View) => v.kind !== "starred" && v.kind !== "later";
 
 export const sameView = (a: View, b: View) =>
   a.kind === b.kind && ("id" in a ? a.id : null) === ("id" in b ? b.id : null);

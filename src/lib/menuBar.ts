@@ -137,12 +137,13 @@ async function build(): Promise<Menu> {
     sep(),
     cmd("article.read"),
     cmd("article.star"),
+    cmd("article.later"),
     cmd("article.open"),
     sep(),
     cmd("list.markAllRead"),
   ]);
 
-  const view = submenu("表示", [cmd("view.all"), cmd("view.starred"), sep(), cmd("list.unreadOnly")]);
+  const view = submenu("表示", [cmd("view.all"), cmd("view.later"), cmd("view.starred"), sep(), cmd("list.unreadOnly")]);
 
   const windowMenu = isMac
     ? [

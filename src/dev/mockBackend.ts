@@ -16,9 +16,15 @@ import type {
   RefreshSummary,
   Sidebar,
 } from "../lib/api";
+import { filtersUnread } from "../lib/api";
 
 type MockFeed = Omit<FeedRow, "unread">;
-type MockArticle = Omit<ArticleRow, "feedTitle"> & { html: string; author: string | null };
+type MockArticle = Omit<ArticleRow, "feedTitle"> & {
+  html: string;
+  author: string | null;
+  /** When it went into あとで読む (db.rs `later_at`). */
+  laterAt: number | null;
+};
 
 const folders: Omit<FolderRow, "unread">[] = [
   { id: 1, name: "技術" },
@@ -35,7 +41,7 @@ const articles: MockArticle[] = [];
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
-const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30 };
+const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system" };
 
 const LOREM =
   "フィードリーダーは、購読したサイトの新しい記事をまとめて読むための道具です。サイトを一つずつ見に行かなくても、更新があったものだけが届きます。";
@@ -52,6 +58,8 @@ function addArticle(feedId: number, published: number, n: number) {
     published,
     read: n % 3 === 0,
     starred: n % 11 === 0,
+    later: n % 13 === 0,
+    laterAt: n % 13 === 0 ? published - n : null,
     author: n % 2 ? "山田 太郎" : null,
     html:
       `<p>${LOREM}</p><h2>見出し</h2><p>本文の中の <a href="https://example.com/">リンク</a> はブラウザで開きます。</p>` +
@@ -71,6 +79,7 @@ const feedTitle = (id: number) => feeds.find((f) => f.id === id)?.title ?? "";
 function matches(a: MockArticle, q: ArticleQuery): boolean {
   const v = q.view;
   if (v.kind === "starred" && !a.starred) return false;
+  if (v.kind === "later" && a.laterAt === null) return false;
   if (v.kind === "feed" && a.feedId !== v.id) return false;
   if (v.kind === "folder" && feeds.find((f) => f.id === a.feedId)?.folderId !== v.id) return false;
   for (const word of q.search.toLowerCase().split(/\s+/).filter(Boolean)) {
@@ -92,6 +101,7 @@ function sidebar(): Sidebar {
     feeds: rows,
     unread: rows.reduce((n, f) => n + f.unread, 0),
     starred: articles.filter((a) => a.starred).length,
+    later: articles.filter((a) => a.laterAt !== null).length,
   };
 }
 
@@ -126,16 +136,25 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       return sidebar();
     case "query_articles": {
       const q: ArticleQuery = a.query;
+      const unreadOnly = q.unreadOnly && filtersUnread(q.view);
       return articles
-        .filter((x) => matches(x, q) && (!q.unreadOnly || !x.read || x.id === q.keep))
-        .sort((x, y) => y.published - x.published || y.id - x.id)
-        .map((x): ArticleRow => ({ ...x, feedTitle: feedTitle(x.feedId), summary: x.summary.slice(0, 160) }));
+        .filter((x) => matches(x, q) && (!unreadOnly || !x.read || x.id === q.keep))
+        .sort((x, y) =>
+          q.view.kind === "later" ? x.laterAt! - y.laterAt! || x.id - y.id : y.published - x.published || y.id - x.id,
+        )
+        .map(({ laterAt, ...x }): ArticleRow => ({
+          ...x,
+          later: laterAt !== null,
+          feedTitle: feedTitle(x.feedId),
+          summary: x.summary.slice(0, 160),
+        }));
     }
     case "get_article": {
       const x = articles.find((y) => y.id === a.id);
       if (!x) throw "記事が見つかりません";
       const f = feeds.find((y) => y.id === x.feedId)!;
-      return { ...x, feedTitle: f.title, siteUrl: f.siteUrl } satisfies Article;
+      const { laterAt, ...rest } = x;
+      return { ...rest, later: laterAt !== null, feedTitle: f.title, siteUrl: f.siteUrl } satisfies Article;
     }
     case "set_read":
       for (const x of articles) if (a.ids.includes(x.id)) x.read = a.read;
@@ -143,6 +162,11 @@ async function handle(cmd: string, a: any): Promise<unknown> {
     case "set_starred": {
       const x = articles.find((y) => y.id === a.id);
       if (x) x.starred = a.starred;
+      return null;
+    }
+    case "set_later": {
+      const now = Date.now();
+      for (const x of articles) if (a.ids.includes(x.id)) x.laterAt = a.later ? (x.laterAt ?? now) : null;
       return null;
     }
     case "mark_all_read": {

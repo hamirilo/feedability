@@ -11,6 +11,9 @@
   --color-danger: #ef5d5d;
   --color-success: #3ec27f;
   --color-star: #f5c451;
+  /* Under the pointer: a lighter shade on dark, a darker one on light. */
+  --color-hover: rgb(255 255 255 / 0.08);
+  --color-scrollbar: #45464d;
 
   --animate-toast-in: toast-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
   --animate-toast-out: toast-out 0.2s ease-in forwards;
@@ -70,6 +73,27 @@
   }
 }
 
+/* Light (docs/THEME.md): the same tokens, other values. lib/theme.ts sets
+   data-theme from the setting; the dark values above are the default. */
+:root[data-theme="light"] {
+  --color-bg: #f7f7f8;
+  --color-panel: #eeeef0;
+  --color-raised: #ffffff;
+  --color-line: #dcdce1;
+  --color-fg: #1d1d20;
+  --color-dim: #6b6c74;
+  --color-accent: #2b6de8;
+  --color-danger: #d63c3c;
+  --color-success: #1d9a5a;
+  --color-star: #d99a00;
+  --color-hover: rgb(0 0 0 / 0.06);
+  --color-scrollbar: #c3c4ca;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -121,7 +145,7 @@ textarea {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #45464d;
+  background: var(--color-scrollbar);
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: padding-box;

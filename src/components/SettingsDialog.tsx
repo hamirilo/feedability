@@ -2,9 +2,16 @@
  * ⌘, : the app's settings (docs/SETTINGS.md), saved to settings.json as soon
  * as they change.
  */
+import type { ThemeSetting } from "../lib/api";
 import { checkForUpdate, appVersion } from "../lib/update";
 import { useStore } from "../store";
 import { field, Modal } from "./Modal";
+
+const THEMES: { value: ThemeSetting; label: string }[] = [
+  { value: "system", label: "OS に合わせる" },
+  { value: "light", label: "ライト" },
+  { value: "dark", label: "ダーク" },
+];
 
 const INTERVALS = [
   { value: 0, label: "自動では更新しない" },
@@ -39,6 +46,23 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setSettings = useStore((s) => s.setSettings);
   return (
     <Modal title="設定" onClose={onClose} width={520}>
+      <Row label="外観">
+        <div className="flex rounded-md bg-bg p-0.5" role="radiogroup" aria-label="外観">
+          {THEMES.map((t) => (
+            <button
+              key={t.value}
+              role="radio"
+              aria-checked={settings.theme === t.value}
+              onClick={() => void setSettings({ ...settings, theme: t.value })}
+              className={`flex-1 rounded px-2 py-1 ${
+                settings.theme === t.value ? "bg-raised text-fg shadow" : "text-dim hover:text-fg"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </Row>
       <Row label="フィードの更新">
         <select
           className={field}
@@ -54,7 +78,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       </Row>
       <Row
         label="既読の記事を残す期間"
-        hint="フィードから消えてからこの期間が過ぎた既読の記事を削除します。スター付きと未読の記事は残ります。"
+        hint="フィードから消えてからこの期間が過ぎた既読の記事を削除します。スター付き・あとで読む・未読の記事は残ります。"
       >
         <select
           className={field}
@@ -80,7 +104,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="mt-2 flex items-center gap-3">
           <button
             onClick={() => void checkForUpdate(true)}
-            className="rounded-md border border-line px-3 py-1 hover:bg-white/10"
+            className="rounded-md border border-line px-3 py-1 hover:bg-hover"
           >
             今すぐ確認
           </button>

@@ -13,13 +13,12 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Feedability",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
         "minHeight": 560,
-        "theme": "Dark",
-        "backgroundColor": "#1b1c1f",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "trafficLightPosition": { "x": 16, "y": 26 }

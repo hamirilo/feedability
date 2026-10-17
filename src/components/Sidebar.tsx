@@ -2,7 +2,7 @@
  * The views: すべて, スター付き, then the folders and their feeds. The buttons
  * at the top stay in place whatever is open (docs/UI.md).
  */
-import { AlertCircle, ChevronRight, Folder, FolderPlus, Inbox, Plus, RefreshCw, Rss, Star } from "lucide-react";
+import { AlertCircle, ChevronRight, Clock, Folder, FolderPlus, Inbox, Plus, RefreshCw, Rss, Star } from "lucide-react";
 import { useCallback, useState } from "react";
 import { command, isEnabled, runCommand } from "../lib/commands";
 import { sameView, type FeedRow, type View } from "../lib/api";
@@ -43,7 +43,7 @@ function Entry({
       onContextMenu={onContextMenu}
       title={title}
       className={`flex w-full items-center gap-2 rounded-md py-1 pr-2 text-left ${
-        active ? "bg-accent/25 text-fg" : "text-fg/90 hover:bg-white/5"
+        active ? "bg-accent/25 text-fg" : "text-fg/90 hover:bg-hover"
       }`}
       style={{ paddingLeft: 8 + depth * 16 }}
     >
@@ -63,7 +63,7 @@ function IconButton({ id, icon, label }: { id: string; icon: React.ReactNode; la
       disabled={!enabled}
       title={withKey(label, id)}
       aria-label={label}
-      className="rounded-md p-1.5 text-dim hover:bg-white/10 hover:text-fg disabled:opacity-40"
+      className="rounded-md p-1.5 text-dim hover:bg-hover hover:text-fg disabled:opacity-40"
     >
       {icon}
     </button>
@@ -146,6 +146,7 @@ export function Sidebar() {
       </div>
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         <Entry view={{ kind: "all" }} icon={<Inbox size={14} className="shrink-0 text-dim" />} label="すべての記事" count={sidebar.unread} />
+        <Entry view={{ kind: "later" }} icon={<Clock size={14} className="shrink-0 text-accent" />} label="あとで読む" count={sidebar.later} />
         <Entry view={{ kind: "starred" }} icon={<Star size={14} className="shrink-0 text-star" />} label="スター付き" count={sidebar.starred} />
         <div className="mt-4 mb-1 px-2 text-[11px] font-semibold text-dim">フィード</div>
         {sidebar.feeds.length === 0 && sidebar.folders.length === 0 && (

@@ -66,7 +66,7 @@ function ToastCard({ t, paused }: { t: Toast; paused: boolean }) {
             </button>
           )}
         </div>
-        <button onClick={() => dismiss(t.id)} className="shrink-0 rounded p-1 text-dim hover:bg-white/10 hover:text-fg">
+        <button onClick={() => dismiss(t.id)} className="shrink-0 rounded p-1 text-dim hover:bg-hover hover:text-fg">
           <X size={14} />
         </button>
       </div>
@@ -107,7 +107,7 @@ function ProgressCard({
         <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
         <span className="shrink-0 text-xs tabular-nums text-dim">{right}</span>
         {onCancel && (
-          <button onClick={onCancel} className="shrink-0 rounded px-2 py-0.5 text-xs text-dim hover:bg-white/10 hover:text-fg">
+          <button onClick={onCancel} className="shrink-0 rounded px-2 py-0.5 text-xs text-dim hover:bg-hover hover:text-fg">
             中止
           </button>
         )}

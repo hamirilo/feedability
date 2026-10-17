@@ -3,10 +3,12 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { logUncaughtErrors } from "./lib/log";
+import { paintCachedTheme } from "./lib/theme";
 import { setUpTitleBar } from "./lib/titleBar";
 
 async function main() {
   logUncaughtErrors();
+  paintCachedTheme();
   setUpTitleBar();
   // Opened in a plain browser during development: use the in-memory mock backend.
   if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {

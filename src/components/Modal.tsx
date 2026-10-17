@@ -67,7 +67,7 @@ export function Buttons({
 }) {
   return (
     <div className="mt-5 flex justify-end gap-2">
-      <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-dim hover:bg-white/10 hover:text-fg">
+      <button type="button" onClick={onCancel} className="rounded-md px-3 py-1.5 text-dim hover:bg-hover hover:text-fg">
         キャンセル
       </button>
       <button

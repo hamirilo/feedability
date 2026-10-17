@@ -5,8 +5,9 @@
  * can't be used now is greyed out, not removed.
  */
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CheckCheck, Search, Star, X } from "lucide-react";
+import { CheckCheck, Clock, Search, Star, X } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { filtersUnread } from "../lib/api";
 import { runCommand } from "../lib/commands";
 import { listDate } from "../lib/format";
 import { composing } from "../lib/ime";
@@ -19,14 +20,20 @@ const ROW = 92;
 function Segment() {
   const unreadOnly = useStore((s) => s.unreadOnly);
   const setUnreadOnly = useStore((s) => s.setUnreadOnly);
+  // スター付き and あとで読む list what was kept, read or not: greyed out
+  // there rather than hidden, so the search field doesn't move.
+  const applies = useStore((s) => filtersUnread(s.view));
   const seg = (on: boolean) =>
-    `px-2.5 py-0.5 rounded ${unreadOnly === on ? "bg-raised text-fg shadow" : "text-dim hover:text-fg"}`;
+    `px-2.5 py-0.5 rounded ${unreadOnly === on ? "bg-raised text-fg shadow" : "text-dim enabled:hover:text-fg"}`;
   return (
-    <div className="flex shrink-0 rounded-md bg-bg p-0.5 text-xs" title={withKey("未読のみ表示の切り替え", "list.unreadOnly")}>
-      <button className={seg(true)} onClick={() => setUnreadOnly(true)}>
+    <div
+      className={`flex shrink-0 rounded-md bg-bg p-0.5 text-xs ${applies ? "" : "opacity-40"}`}
+      title={applies ? withKey("未読のみ表示の切り替え", "list.unreadOnly") : "スター付きとあとで読むでは、読んだ記事も表示します"}
+    >
+      <button className={seg(true)} onClick={() => setUnreadOnly(true)} disabled={!applies}>
         未読
       </button>
-      <button className={seg(false)} onClick={() => setUnreadOnly(false)}>
+      <button className={seg(false)} onClick={() => setUnreadOnly(false)} disabled={!applies}>
         すべて
       </button>
     </div>
@@ -76,6 +83,7 @@ function Empty() {
   const hasFeeds = useStore((s) => s.sidebar.feeds.length > 0);
   const unreadOnly = useStore((s) => s.unreadOnly);
   const search = useStore((s) => s.search);
+  const view = useStore((s) => s.view);
   if (!hasFeeds) {
     return (
       <div className="flex flex-col items-center gap-3 px-6 pt-24 text-center">
@@ -87,7 +95,7 @@ function Empty() {
           <button onClick={() => runCommand("feed.add")} className="rounded-md bg-accent px-3 py-1.5 font-medium text-white hover:brightness-110">
             フィードを追加
           </button>
-          <button onClick={() => runCommand("opml.import")} className="rounded-md border border-line px-3 py-1.5 hover:bg-white/10">
+          <button onClick={() => runCommand("opml.import")} className="rounded-md border border-line px-3 py-1.5 hover:bg-hover">
             OPML を読み込む
           </button>
         </div>
@@ -96,7 +104,15 @@ function Empty() {
   }
   return (
     <p className="px-6 pt-24 text-center text-dim">
-      {search.trim() ? "見つかりませんでした" : unreadOnly ? "未読の記事はありません" : "記事はありません"}
+      {search.trim()
+        ? "見つかりませんでした"
+        : view.kind === "later"
+          ? "あとで読む記事はありません。記事を開いて L で入れられます"
+          : view.kind === "starred"
+            ? "スター付きの記事はありません"
+            : unreadOnly
+              ? "未読の記事はありません"
+              : "記事はありません"}
     </p>
   );
 }
@@ -144,7 +160,7 @@ export function ArticleList() {
             disabled={!canMarkAll}
             title={withKey(canMarkAll ? "一覧をすべて既読にする" : "未読の記事がありません", "list.markAllRead")}
             aria-label="一覧をすべて既読にする"
-            className="shrink-0 rounded-md p-1.5 text-dim hover:bg-white/10 hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+            className="shrink-0 rounded-md p-1.5 text-dim hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
             <CheckCheck size={16} />
           </button>
@@ -163,7 +179,7 @@ export function ArticleList() {
                 aria-selected={selected}
                 onClick={() => void select(a.id)}
                 className={`absolute inset-x-0 cursor-default border-b border-line/60 px-3 py-2 ${
-                  selected ? "bg-accent/25" : "hover:bg-white/[0.03]"
+                  selected ? "bg-accent/25" : "hover:bg-hover/50"
                 }`}
                 style={{ height: ROW, transform: `translateY(${v.start}px)` }}
               >
@@ -173,6 +189,7 @@ export function ArticleList() {
                     aria-label={a.read ? undefined : "未読"}
                   />
                   <span className="min-w-0 flex-1 truncate">{a.feedTitle}</span>
+                  {a.later && <Clock size={11} className="shrink-0 text-accent" aria-label="あとで読む" />}
                   {a.starred && <Star size={11} className="shrink-0 fill-current text-star" />}
                   <span className="shrink-0 tabular-nums">{listDate(a.published)}</span>
                 </div>

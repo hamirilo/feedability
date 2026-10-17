@@ -15,6 +15,7 @@ desktop-platform の Architecture §5 の 3 層のうち、「アプリ全体」
 
 | 項目 | キー | 既定 | 選択肢 |
 |---|---|---|---|
+| 外観 | `theme` | `system` | OS に合わせる（`system`）/ ライト / ダーク（[THEME.md](THEME.md)） |
 | フィードの更新 | `refreshMinutes` | 30 | 自動では更新しない（0）/ 15 / 30 / 60 / 180 分 |
 | 既読の記事を残す期間 | `keepDays` | 30 | 7 / 30 / 90 / 365 日 / 削除しない（0） |
 | アップデートを起動時に確認する | `autoUpdate` | オン | |
