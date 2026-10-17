@@ -29,3 +29,4 @@ AI と人が実装前に確認する **現在の前提**。機能要件、ロー
 
 - [ADR-0001](adr-0001-fetching-feeds.md) フィードを取りに行く（Security §6「アプリは URL を取りに行かない」から）
 - [ADR-0002](adr-0002-data-in-app-data-dir.md) データを `app_data_dir()` の SQLite に置く（Architecture §6「フォルダ 1 つで完結」と Project Context の 2 択から）
+- [ADR-0003](adr-0003-theme-follows-os.md) 外観の既定を OS に合わせる（UI §1「ダークを既定にする」から）

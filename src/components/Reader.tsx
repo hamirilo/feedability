@@ -7,7 +7,7 @@
  *
  * Links open in the OS's browser; the app's window never navigates.
  */
-import { CircleDot, ExternalLink, Star } from "lucide-react";
+import { CircleDot, Clock, ExternalLink, Star } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { openInBrowser } from "../lib/actions";
 import { api } from "../lib/api";
@@ -89,7 +89,18 @@ function Body({ html }: { html: string }) {
   return <div ref={ref} className="article" onClick={onClick} onAuxClick={onAuxClick} />;
 }
 
-function ToolButton({ id, icon, label, active }: { id: string; icon: React.ReactNode; label: string; active?: boolean }) {
+function ToolButton({
+  id,
+  icon,
+  label,
+  active,
+}: {
+  id: string;
+  icon: React.ReactNode;
+  label: string;
+  /** The colour when on (a star is yellow, あとで読む blue). */
+  active?: string;
+}) {
   const enabled = useStore((s) => isEnabled(command(id), s));
   return (
     <button
@@ -97,9 +108,9 @@ function ToolButton({ id, icon, label, active }: { id: string; icon: React.React
       disabled={!enabled}
       title={withKey(label, id)}
       aria-label={label}
-      aria-pressed={active}
-      className={`rounded-md p-1.5 hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent ${
-        active ? "text-star" : "text-dim hover:text-fg"
+      aria-pressed={active !== undefined}
+      className={`rounded-md p-1.5 hover:bg-hover disabled:opacity-40 disabled:hover:bg-transparent ${
+        active ?? "text-dim hover:text-fg"
       }`}
     >
       {icon}
@@ -117,7 +128,7 @@ export function Reader() {
 
   return (
     <main className="flex h-full min-w-0 flex-1 flex-col bg-bg">
-      {/* The same three buttons whatever is open; greyed out with no article. */}
+      {/* The same buttons whatever is open; greyed out with no article. */}
       <header
         {...dragRegion(true)}
         className="flex shrink-0 items-center justify-end gap-0.5 border-b border-line px-3"
@@ -128,7 +139,13 @@ export function Reader() {
           id="article.star"
           icon={<Star size={16} className={article?.starred ? "fill-current" : ""} />}
           label={article?.starred ? "スターを外す" : "スターを付ける"}
-          active={!!article?.starred}
+          active={article?.starred ? "text-star" : undefined}
+        />
+        <ToolButton
+          id="article.later"
+          icon={<Clock size={16} />}
+          label={article?.later ? "あとで読むから外す" : "あとで読む"}
+          active={article?.later ? "text-accent" : undefined}
         />
         <ToolButton id="article.open" icon={<ExternalLink size={16} />} label="ブラウザで開く" />
       </header>

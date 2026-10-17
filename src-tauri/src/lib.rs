@@ -22,6 +22,21 @@ fn log_panics() {
     }));
 }
 
+/// The window, from tauri.conf.json (where it isn't created by itself), in
+/// the saved theme: light or dark, or the OS's (docs/THEME.md).
+fn main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .expect("window in tauri.conf.json");
+    let window = tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+    apply_theme(&window, saved_theme(app));
+    Ok(())
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
@@ -82,11 +97,13 @@ pub fn run() {
                 std::env::consts::OS,
                 std::env::consts::ARCH
             );
-            // Without the database the window still opens; every command
-            // then says so, and the log has why.
+            // The database before the window: the page asks for the list
+            // as soon as it loads. Without the database the window still
+            // opens; every command then says so, and the log has why.
             if let Err(e) = open_db(app.handle()) {
                 log::error!("database: {e}");
             }
+            main_window(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -97,6 +114,7 @@ pub fn run() {
             get_article,
             set_read,
             set_starred,
+            set_later,
             mark_all_read,
             image_data_url,
             open_url,

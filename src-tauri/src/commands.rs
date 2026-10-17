@@ -81,6 +81,43 @@ pub struct AppSettings {
     refresh_minutes: u32,
     /// Read articles their feed no longer lists go after this many days; 0 = never.
     keep_days: u32,
+    /// 外観: the OS's, or always light / dark (docs/THEME.md).
+    pub theme: Theme,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// The window's page colour (index.css `--color-bg`) for each theme: what
+/// shows before the page has drawn, so opening doesn't flash the other one.
+const BG_DARK: tauri::window::Color = tauri::window::Color(0x1b, 0x1c, 0x1f, 0xff);
+const BG_LIGHT: tauri::window::Color = tauri::window::Color(0xf7, 0xf7, 0xf8, 0xff);
+
+/// The window follows the theme: its title bar, scroll bars and native
+/// controls, and `prefers-color-scheme` inside the page. Done from Rust so
+/// the page needs no window permission for it.
+pub fn apply_theme(window: &tauri::WebviewWindow, theme: Theme) {
+    let wanted = match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    };
+    if let Err(e) = window.set_theme(wanted) {
+        log::warn!("theme: {e}");
+    }
+    let dark = window.theme().map_or(true, |t| t == tauri::Theme::Dark);
+    let _ = window.set_background_color(Some(if dark { BG_DARK } else { BG_LIGHT }));
+}
+
+/// The saved theme, for the window at launch (lib.rs).
+pub fn saved_theme(app: &AppHandle) -> Theme {
+    load_settings(app).theme
 }
 
 impl Default for AppSettings {
@@ -89,6 +126,7 @@ impl Default for AppSettings {
             auto_update: true,
             refresh_minutes: 30,
             keep_days: 30,
+            theme: Theme::System,
         }
     }
 }
@@ -128,6 +166,9 @@ pub async fn get_app_settings(app: AppHandle) -> AppSettings {
 /// mid-write never leaves half a file.
 #[tauri::command]
 pub async fn set_app_settings(app: AppHandle, settings: AppSettings) -> CmdResult<AppSettings> {
+    if let Some(w) = app.get_webview_window("main") {
+        apply_theme(&w, settings.theme);
+    }
     let path = settings_path(&app)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(err)?;
@@ -168,6 +209,7 @@ pub struct Article {
     published: i64,
     read: bool,
     starred: bool,
+    later: bool,
 }
 
 #[tauri::command]
@@ -191,6 +233,7 @@ pub async fn get_article(state: State<'_, AppState>, id: i64) -> CmdResult<Artic
         published: a.published,
         read: a.read,
         starred: a.starred,
+        later: a.later,
     })
 }
 
@@ -202,6 +245,12 @@ pub async fn set_read(state: State<'_, AppState>, ids: Vec<i64>, read: bool) -> 
 #[tauri::command]
 pub async fn set_starred(state: State<'_, AppState>, id: i64, starred: bool) -> CmdResult<()> {
     with_db(&state, |c| db::set_starred(c, id, starred))
+}
+
+/// Into or out of あとで読む (docs/LATER.md).
+#[tauri::command]
+pub async fn set_later(state: State<'_, AppState>, ids: Vec<i64>, later: bool) -> CmdResult<()> {
+    with_db(&state, |c| db::set_later(c, &ids, later))
 }
 
 /// Returns the ids it marked, for 元に戻す.

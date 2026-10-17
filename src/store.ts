@@ -18,6 +18,7 @@ import {
   type View,
 } from "./lib/api";
 import { warn } from "./lib/log";
+import { applyTheme } from "./lib/theme";
 
 export interface ToastAction {
   label: string;
@@ -118,6 +119,8 @@ export interface State {
   move: (delta: 1 | -1) => void;
   toggleRead: () => Promise<void>;
   toggleStar: () => Promise<void>;
+  /** Into or out of あとで読む (L). */
+  toggleLater: () => Promise<void>;
   markAllRead: () => Promise<void>;
   /**
    * Refreshes `ids` (all feeds when absent). `quiet`: the automatic refresh,
@@ -137,22 +140,39 @@ export interface State {
   dismissToast: (id: number) => void;
 }
 
-const EMPTY_SIDEBAR: Sidebar = { folders: [], feeds: [], unread: 0, starred: 0 };
+const EMPTY_SIDEBAR: Sidebar = { folders: [], feeds: [], unread: 0, starred: 0, later: 0 };
 const prefs = loadPrefs();
 let toastSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 /** The latest list query: an older answer arriving late is dropped. */
 let querySeq = 0;
 let articleSeq = 0;
+/**
+ * The open article, when it was in あとで読む as it was opened: leaving it
+ * (another article, another view) means it has been read, and it goes out
+ * of the queue (docs/LATER.md). Not when the user put it in while reading,
+ * or pressed L on it: then they said what they want.
+ */
+let finishOnLeave: number | null = null;
 
 export const useStore = create<State>((set, get) => {
   const query = (): ArticleQuery => {
     const s = get();
     return { view: s.view, unreadOnly: s.unreadOnly, search: s.search.trim(), keep: s.selectedId };
   };
+  /** Leaving the open article for `next`: a finished あとで読む goes out of it. Its row stays until the list is asked again. */
+  const leave = (next: number | null) => {
+    const id = finishOnLeave;
+    if (id === null || id === next) return;
+    finishOnLeave = null;
+    api.setLater([id], false).then(() => {
+      patch([id], { later: false });
+      void get().reloadSidebar();
+    }, fail);
+  };
   const fail = (e: unknown) => get().toast(String(e), true);
   /** Read / starred on the rows already shown and on the open article. */
-  const patch = (ids: number[], change: Partial<Pick<ArticleRow, "read" | "starred">>) => {
+  const patch = (ids: number[], change: Partial<Pick<ArticleRow, "read" | "starred" | "later">>) => {
     const set_ = new Set(ids);
     const a = get().article;
     set({
@@ -171,7 +191,7 @@ export const useStore = create<State>((set, get) => {
     selectedId: null,
     article: null,
     collapsed: new Set(prefs.collapsed),
-    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30 },
+    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system" },
     refreshing: null,
     updating: null,
     dialog: null,
@@ -179,7 +199,9 @@ export const useStore = create<State>((set, get) => {
 
     init: async () => {
       try {
-        set({ settings: await api.getAppSettings() });
+        const settings = await api.getAppSettings();
+        set({ settings });
+        applyTheme(settings.theme);
       } catch (e) {
         warn("settings", e);
       }
@@ -214,6 +236,7 @@ export const useStore = create<State>((set, get) => {
 
     setView: (v) => {
       if (sameView(v, get().view)) return;
+      leave(null);
       set({ view: v, selectedId: null, article: null });
       void get().reload();
     },
@@ -239,12 +262,14 @@ export const useStore = create<State>((set, get) => {
 
     select: async (id) => {
       const seq = ++articleSeq;
+      leave(id);
       set({ selectedId: id, article: id === get().article?.id ? get().article : null });
       if (id === null) return;
       try {
         const article = await api.getArticle(id);
         if (seq !== articleSeq) return;
         set({ article });
+        if (finishOnLeave !== id) finishOnLeave = article.later ? id : null;
         // Opening an article reads it.
         if (!article.read) {
           await api.setRead([id], true);
@@ -283,6 +308,19 @@ export const useStore = create<State>((set, get) => {
       try {
         await api.setStarred(a.id, !a.starred);
         patch([a.id], { starred: !a.starred });
+        void get().reloadSidebar();
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    toggleLater: async () => {
+      const a = get().article;
+      if (!a) return;
+      finishOnLeave = null;
+      try {
+        await api.setLater([a.id], !a.later);
+        patch([a.id], { later: !a.later });
         void get().reloadSidebar();
       } catch (e) {
         fail(e);
@@ -344,7 +382,9 @@ export const useStore = create<State>((set, get) => {
 
     setSettings: async (s) => {
       try {
-        set({ settings: await api.setAppSettings(s) });
+        const settings = await api.setAppSettings(s);
+        set({ settings });
+        applyTheme(settings.theme);
       } catch (e) {
         fail(e);
       }
@@ -389,6 +429,8 @@ export function viewTitle(s: Pick<State, "view" | "sidebar">): string {
       return "すべての記事";
     case "starred":
       return "スター付き";
+    case "later":
+      return "あとで読む";
     case "feed":
       return s.sidebar.feeds.find((f) => f.id === v.id)?.title ?? "";
     case "folder":

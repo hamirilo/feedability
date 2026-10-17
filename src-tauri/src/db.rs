@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 1;
+const VERSION: i64 = 2;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -105,6 +105,16 @@ fn migrate(conn: &Connection) -> DbResult<()> {
              COMMIT;",
         )?;
     }
+    if version < 2 {
+        // あとで読む (docs/LATER.md): `later_at` is when it went in, for the
+        // queue's order; NULL when not in it. An older app ignores the column.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE articles ADD COLUMN later_at INTEGER;
+             CREATE INDEX IF NOT EXISTS articles_later ON articles(later_at) WHERE later_at IS NOT NULL;
+             COMMIT;",
+        )?;
+    }
     if version < VERSION {
         conn.pragma_update(None, "user_version", VERSION)?;
     }
@@ -141,6 +151,7 @@ pub struct Sidebar {
     pub feeds: Vec<FeedRow>,
     pub unread: i64,
     pub starred: i64,
+    pub later: i64,
 }
 
 pub fn sidebar(conn: &Connection) -> DbResult<Sidebar> {
@@ -189,11 +200,17 @@ pub fn sidebar(conn: &Connection) -> DbResult<Sidebar> {
     let starred = conn.query_row("SELECT COUNT(*) FROM articles WHERE starred = 1", [], |r| {
         r.get(0)
     })?;
+    let later = conn.query_row(
+        "SELECT COUNT(*) FROM articles WHERE later_at IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
     Ok(Sidebar {
         folders,
         feeds,
         unread,
         starred,
+        later,
     })
 }
 
@@ -447,7 +464,7 @@ pub fn store_articles(
     Ok(added)
 }
 
-/// Removes read, unstarred articles their feed stopped listing more than
+/// Removes read articles, neither starred nor in あとで読む, their feed stopped listing more than
 /// `keep_days` ago. 0 keeps everything.
 pub fn purge(conn: &Connection, keep_days: u32) -> DbResult<usize> {
     if keep_days == 0 {
@@ -455,7 +472,7 @@ pub fn purge(conn: &Connection, keep_days: u32) -> DbResult<usize> {
     }
     let cutoff = now_ms() - i64::from(keep_days) * 86_400_000;
     conn.execute(
-        "DELETE FROM articles WHERE read = 1 AND starred = 0 AND seen_at < ?1",
+        "DELETE FROM articles WHERE read = 1 AND starred = 0 AND later_at IS NULL AND seen_at < ?1",
         [cutoff],
     )
 }
@@ -466,14 +483,29 @@ pub fn purge(conn: &Connection, keep_days: u32) -> DbResult<usize> {
 pub enum View {
     All,
     Starred,
-    Feed { id: i64 },
-    Folder { id: i64 },
+    /// あとで読む: oldest first, a queue to work through.
+    Later,
+    Feed {
+        id: i64,
+    },
+    Folder {
+        id: i64,
+    },
+}
+
+impl View {
+    /// Whether 未読のみ applies to this view.
+    pub fn filters_unread(self) -> bool {
+        !matches!(self, View::Starred | View::Later)
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ArticleQuery {
     pub view: View,
+    /// Not for スター付き and あとで読む: what is kept there is often already
+    /// read, and the list is the filter itself (`View::filters_unread`).
     #[serde(default)]
     pub unread_only: bool,
     #[serde(default)]
@@ -496,6 +528,7 @@ pub struct ArticleRow {
     pub published: i64,
     pub read: bool,
     pub starred: bool,
+    pub later: bool,
 }
 
 /// How much of the summary the list gets: two lines at most are shown.
@@ -509,6 +542,7 @@ fn filter(q: &ArticleQuery) -> (String, Vec<rusqlite::types::Value>) {
     match q.view {
         View::All => {}
         View::Starred => clauses.push("a.starred = 1".into()),
+        View::Later => clauses.push("a.later_at IS NOT NULL".into()),
         View::Feed { id } => {
             clauses.push("a.feed_id = ?".into());
             args.push(Value::Integer(id));
@@ -543,7 +577,7 @@ fn filter(q: &ArticleQuery) -> (String, Vec<rusqlite::types::Value>) {
 
 pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<ArticleRow>> {
     let (mut sql_filter, mut args) = filter(q);
-    if q.unread_only {
+    if q.unread_only && q.view.filters_unread() {
         match q.keep {
             Some(keep) => {
                 sql_filter = format!("({sql_filter}) AND (a.read = 0 OR a.id = ?)");
@@ -554,10 +588,11 @@ pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<Artic
     }
     let sql = format!(
         "SELECT a.id, a.feed_id, COALESCE(f.custom_title, f.title), a.title, substr(a.summary, 1, {LIST_SUMMARY_CHARS}),
-                a.url, a.published, a.read, a.starred
+                a.url, a.published, a.read, a.starred, a.later_at IS NOT NULL
          FROM articles a JOIN feeds f ON f.id = a.feed_id
          WHERE {sql_filter}
-         ORDER BY a.published DESC, a.id DESC"
+         ORDER BY {order}",
+        order = if q.view == View::Later { "a.later_at, a.id" } else { "a.published DESC, a.id DESC" }
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args), |r| {
@@ -571,6 +606,7 @@ pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<Artic
             published: r.get(6)?,
             read: r.get(7)?,
             starred: r.get(8)?,
+            later: r.get(9)?,
         })
     })?;
     rows.collect()
@@ -591,12 +627,13 @@ pub struct ArticleFull {
     pub published: i64,
     pub read: bool,
     pub starred: bool,
+    pub later: bool,
 }
 
 pub fn article(conn: &Connection, id: i64) -> DbResult<Option<ArticleFull>> {
     conn.query_row(
         "SELECT a.id, a.feed_id, COALESCE(f.custom_title, f.title), f.site_url, a.title, a.url, a.author,
-                a.content, a.summary, a.published, a.read, a.starred
+                a.content, a.summary, a.published, a.read, a.starred, a.later_at IS NOT NULL
          FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.id = ?1",
         [id],
         |r| {
@@ -613,6 +650,7 @@ pub fn article(conn: &Connection, id: i64) -> DbResult<Option<ArticleFull>> {
                 published: r.get(9)?,
                 read: r.get(10)?,
                 starred: r.get(11)?,
+                later: r.get(12)?,
             })
         },
     )
@@ -636,6 +674,24 @@ pub fn set_starred(conn: &Connection, id: i64, starred: bool) -> DbResult<()> {
         params![id, starred],
     )?;
     Ok(())
+}
+
+/// Into あとで読む (at the end of the queue) or out of it. An article already
+/// in keeps its place.
+pub fn set_later(conn: &mut Connection, ids: &[i64], later: bool) -> DbResult<()> {
+    let now = now_ms();
+    let tx = conn.transaction()?;
+    for id in ids {
+        if later {
+            tx.execute(
+                "UPDATE articles SET later_at = COALESCE(later_at, ?2) WHERE id = ?1",
+                params![id, now],
+            )?;
+        } else {
+            tx.execute("UPDATE articles SET later_at = NULL WHERE id = ?1", [id])?;
+        }
+    }
+    tx.commit()
 }
 
 /// Marks what the query lists as read; returns the ids that were unread, so
@@ -791,6 +847,86 @@ mod tests {
             1
         );
         assert_eq!(sidebar(&conn).unwrap().starred, 1);
+    }
+
+    #[test]
+    fn later_is_a_queue_kept_from_purge() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        store_articles(
+            &mut conn,
+            feed,
+            &[art("a", "A", 3), art("b", "B", 2), art("c", "C", 1)],
+        )
+        .unwrap();
+        let id = |t: &str| {
+            query_articles(&conn, &all())
+                .unwrap()
+                .into_iter()
+                .find(|r| r.title == t)
+                .unwrap()
+                .id
+        };
+        let (a, b, c) = (id("A"), id("B"), id("C"));
+        // In the order they went in, not by date; adding again keeps the place.
+        set_later(&mut conn, &[b], true).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        set_later(&mut conn, &[a], true).unwrap();
+        set_later(&mut conn, &[b], true).unwrap();
+        let later = ArticleQuery {
+            view: View::Later,
+            ..all()
+        };
+        fn titles(conn: &Connection, q: &ArticleQuery) -> Vec<String> {
+            query_articles(conn, q)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.title)
+                .collect()
+        }
+        assert_eq!(titles(&conn, &later), ["B", "A"]);
+        assert_eq!(sidebar(&conn).unwrap().later, 2);
+        assert!(db_article_later(&conn, a));
+
+        // 未読のみ doesn't hide read articles here.
+        set_read(&mut conn, &[a, b, c], true).unwrap();
+        let unread_only = ArticleQuery {
+            unread_only: true,
+            ..later.clone()
+        };
+        assert_eq!(titles(&conn, &unread_only), ["B", "A"]);
+
+        // Read and old, but in あとで読む: kept.
+        conn.execute("UPDATE articles SET seen_at = 0", []).unwrap();
+        assert_eq!(purge(&conn, 30).unwrap(), 1, "only C");
+
+        set_later(&mut conn, &[b], false).unwrap();
+        assert_eq!(titles(&conn, &later), ["A"]);
+    }
+
+    fn db_article_later(conn: &Connection, id: i64) -> bool {
+        article(conn, id).unwrap().unwrap().later
+    }
+
+    #[test]
+    fn migrates_a_version_1_file() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE articles (id INTEGER PRIMARY KEY, feed_id INTEGER NOT NULL, guid TEXT NOT NULL,
+               url TEXT, title TEXT NOT NULL, author TEXT, summary TEXT NOT NULL DEFAULT '',
+               content TEXT NOT NULL DEFAULT '', published INTEGER NOT NULL, added_at INTEGER NOT NULL,
+               seen_at INTEGER NOT NULL, read INTEGER NOT NULL DEFAULT 0, starred INTEGER NOT NULL DEFAULT 0,
+               UNIQUE (feed_id, guid));
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        setup(&conn).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        conn.execute("UPDATE articles SET later_at = 1", [])
+            .unwrap();
     }
 
     #[test]

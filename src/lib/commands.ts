@@ -9,6 +9,7 @@
  */
 import {
   CheckCheck,
+  Clock,
   CircleDot,
   ExternalLink,
   FolderPlus,
@@ -30,7 +31,7 @@ import {
   renameFeedDialog,
   renameFolderDialog,
 } from "./actions";
-import { api } from "./api";
+import { api, filtersUnread } from "./api";
 import { checkForUpdate } from "./update";
 import { useStore, type State } from "../store";
 
@@ -163,6 +164,7 @@ export const COMMANDS: Command[] = [
     title: "未読のみ表示",
     keys: ["Mod+U"],
     keyBy: "global",
+    enabled: (s) => filtersUnread(s.view),
     checked: (s) => s.unreadOnly,
     run: (s) => s.setUnreadOnly(!s.unreadOnly),
   },
@@ -183,7 +185,8 @@ export const COMMANDS: Command[] = [
     run: () => document.querySelector<HTMLInputElement>("#search")?.select(),
   },
   { id: "view.all", title: "すべての記事", keys: ["Mod+1"], keyBy: "global", run: (s) => s.setView({ kind: "all" }) },
-  { id: "view.starred", title: "スター付き", keys: ["Mod+2"], keyBy: "global", run: (s) => s.setView({ kind: "starred" }) },
+  { id: "view.later", title: "あとで読む", keys: ["Mod+2"], keyBy: "global", run: (s) => s.setView({ kind: "later" }) },
+  { id: "view.starred", title: "スター付き", keys: ["Mod+3"], keyBy: "global", run: (s) => s.setView({ kind: "starred" }) },
 
   // ------------------------------------------------------------- article
   {
@@ -204,6 +207,16 @@ export const COMMANDS: Command[] = [
     enabled: hasArticle,
     checked: (s) => !!s.article?.starred,
     run: (s) => void s.toggleStar(),
+  },
+  {
+    id: "article.later",
+    title: "あとで読む",
+    label: (s) => (s.article?.later ? "あとで読むから外す" : "あとで読む"),
+    icon: Clock,
+    keys: ["L"],
+    enabled: hasArticle,
+    checked: (s) => !!s.article?.later,
+    run: (s) => void s.toggleLater(),
   },
   {
     id: "article.page",
