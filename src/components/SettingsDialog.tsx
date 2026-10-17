@@ -2,7 +2,7 @@
  * ⌘, : the app's settings (docs/SETTINGS.md), saved to settings.json as soon
  * as they change.
  */
-import type { ThemeSetting } from "../lib/api";
+import type { MarkReadOn, ThemeSetting } from "../lib/api";
 import { checkForUpdate, appVersion } from "../lib/update";
 import { useStore } from "../store";
 import { field, Modal } from "./Modal";
@@ -11,6 +11,12 @@ const THEMES: { value: ThemeSetting; label: string }[] = [
   { value: "system", label: "OS に合わせる" },
   { value: "light", label: "ライト" },
   { value: "dark", label: "ダーク" },
+];
+
+const MARK_READ: { value: MarkReadOn; label: string }[] = [
+  { value: "open", label: "開いたとき" },
+  { value: "delay", label: "開いて 2 秒後" },
+  { value: "manual", label: "自分で既読にする（M）" },
 ];
 
 const INTERVALS = [
@@ -86,6 +92,19 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           onChange={(e) => void setSettings({ ...settings, keepDays: Number(e.target.value) })}
         >
           {KEEP.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </Row>
+      <Row label="記事を既読にする" hint="2 秒後にすると、J / K で通り過ぎた記事は未読のまま残ります">
+        <select
+          className={field}
+          value={settings.markReadOn}
+          onChange={(e) => void setSettings({ ...settings, markReadOn: e.target.value as MarkReadOn })}
+        >
+          {MARK_READ.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}
             </option>

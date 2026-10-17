@@ -51,7 +51,7 @@ const iconCache = new Map<number, string>();
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
-const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false };
+const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open" };
 
 const LOREM =
   "フィードリーダーは、購読したサイトの新しい記事をまとめて読むための道具です。サイトを一つずつ見に行かなくても、更新があったものだけが届きます。";

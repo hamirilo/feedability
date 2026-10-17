@@ -100,6 +100,8 @@ export interface Article {
 
 export type ThemeSetting = "system" | "light" | "dark";
 
+export type MarkReadOn = "open" | "delay" | "manual";
+
 export interface AppSettings {
   autoUpdate: boolean;
   /** 0 = only by hand. */
@@ -109,6 +111,8 @@ export interface AppSettings {
   theme: ThemeSetting;
   /** After すべて既読, open the next feed with unread articles. */
   nextFeedAfterReadAll: boolean;
+  /** When opening an article marks it read. */
+  markReadOn: MarkReadOn;
 }
 
 export interface Added {
