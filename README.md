@@ -129,7 +129,7 @@ src-tauri/
   src/opml.rs             OPML の読み書き
   src/proxy.rs            OS のプロキシ（PAC）の解決
   examples/fetch.rs       アプリなしでフィードを取得・解析
-docs/                     ARCHITECTURE.md、SETTINGS.md、THEME.md、LATER.md、LIST.md、LAYOUT.md、FEED_INFO.md、FAVICON.md、ROADMAP.md
+docs/                     ARCHITECTURE.md、SETTINGS.md、THEME.md、LATER.md、LIST.md、LAYOUT.md、FEED_INFO.md、FAVICON.md、STOCKROOM.md、ROADMAP.md
 decisions/                project-context.md、ADR
 ```
 
