@@ -64,7 +64,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDOEYwRjQ0RTJBQTU2MDQKUldRRVZxcmlSQStQZkttbkN4UmdGRkZpRUN5ZEI0OWxBUEtCcnJHL3gvQ2ZrelZ6T2VEK2hVMFUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyODY2QzQ4Mzc3MzRCRDgKUldUWVMzTTNTR3lHSWdwT3lSLzFYWHBMUHU3UVJrZEtOdTlGKzZoWWx1WVNlR2NyZXI3RlEzc1EK",
       "endpoints": ["https://github.com/hamirilo/feedability/releases/latest/download/latest.json"],
       "windows": { "installMode": "passive" }
     }

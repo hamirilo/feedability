@@ -131,4 +131,4 @@ decisions/                project-context.md、ADR
 4. CI がバージョンと CHANGELOG と署名鍵を確かめてから、macOS と Windows のインストーラを作り、**draft** のリリースを作る（本文は CHANGELOG の節）
 5. draft を確認して publish する。publish されるまでアプリ内アップデートには届かない
 
-署名鍵（`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）は GitHub Secrets に置く。stockroom と同じ owner 共通の鍵を使う（desktop-platform の playbook/updater-key.md）。鍵が無いと tag のビルドは失敗し、それ以外のビルドはインストーラだけを作る。
+署名鍵（`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）は GitHub Secrets に置く。owner（hamirilo）の鍵を使う（鍵 ID `22866C4837734BD8`。desktop-platform の playbook/updater-key.md）。秘密鍵のファイルとパスワードはパスワードマネージャーにもバックアップしておく。鍵が無いと tag のビルドは失敗し、それ以外のビルドはインストーラだけを作る。
