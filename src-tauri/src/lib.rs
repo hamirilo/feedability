@@ -59,14 +59,19 @@ fn listen_for_opened(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
         use tauri_plugin_deep_link::DeepLinkExt;
+        let classify = |urls: Vec<url::Url>| -> Vec<opened::OpenRequest> {
+            urls.iter()
+                .filter_map(|u| opened::classify(u.as_str()))
+                .collect()
+        };
         let handle = app.clone();
-        app.deep_link().on_open_url(move |e| {
-            let urls: Vec<String> = e.urls().into_iter().map(|u| u.to_string()).collect();
-            hand_over(
-                &handle,
-                urls.iter().filter_map(|u| opened::classify(u)).collect(),
-            );
-        });
+        app.deep_link()
+            .on_open_url(move |e| hand_over(&handle, classify(e.urls())));
+        // What launched the app (a feed: link, an .opml file) came before
+        // there was anyone listening: the plugin keeps it.
+        if let Ok(Some(urls)) = app.deep_link().get_current() {
+            hand_over(app, classify(urls));
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {

@@ -32,7 +32,6 @@ export default function App() {
     let unlistenFullText: (() => void) | undefined;
     let unlistenOpen: (() => void) | undefined;
     const unlistenExtension: (() => void)[] = [];
-    let disposed = false;
     api
       .onRefreshProgress((p) => useStore.getState().setRefreshing(p))
       .then((u) => (unlisten = u))
@@ -48,12 +47,21 @@ export default function App() {
       .then((u) => (unlistenFullText = u))
       .catch((e) => warn("full text", e));
     // feed: links and .opml files from the OS: those of the launch are kept
-    // in Rust until asked; later ones are told.
-    api
-      .onOpenRequested(() => void openHandedOver())
-      .then((u) => (unlistenOpen = u))
+    // in Rust until asked; later ones are told. Listening comes first, then
+    // the first look: one handed over in between is told, not stranded.
+    // Looks happen one after another, so none sees a request twice.
+    let looking = Promise.resolve();
+    const lookAtHandedOver = () =>
+      (looking = looking.then(openHandedOver).catch((e) => warn("open requested", e)));
+    let stopped = false;
+    const listening = api
+      .onOpenRequested(() => void lookAtHandedOver())
+      // Unmounted before it was listening (React's dev double mount): stop at once.
+      .then((u) => (stopped ? u() : (unlistenOpen = u)))
       .catch((e) => warn("open requested", e));
-    void useStore.getState().init().then(() => openHandedOver());
+    void Promise.all([useStore.getState().init(), listening]).then(() => {
+      if (!stopped) void lookAtHandedOver();
+    });
     // The browser extension: its request to connect, and what it sent.
     for (const u of [
       api.onExtensionPair((r) => useStore.getState().setExtensionPair(r)),
@@ -67,8 +75,8 @@ export default function App() {
         void s.reload();
       }),
     ]) {
-      // Unmounted before it was listening (React's dev double mount): stop at once, or every message shows twice.
-      u.then((f) => (disposed ? f() : unlistenExtension.push(f))).catch((e) => warn("extension", e));
+      // Unmounted before it was listening: stop at once, or every message shows twice.
+      u.then((f) => (stopped ? f() : unlistenExtension.push(f))).catch((e) => warn("extension", e));
     }
     return () => {
       uninstallMenu();
@@ -76,8 +84,8 @@ export default function App() {
       unlisten?.();
       unlistenIcons?.();
       unlistenFullText?.();
+      stopped = true;
       unlistenOpen?.();
-      disposed = true;
       unlistenExtension.forEach((f) => f());
     };
   }, []);

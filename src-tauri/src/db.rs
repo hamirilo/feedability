@@ -1004,16 +1004,22 @@ pub fn take_full_queue(conn: &mut Connection, per_feed: usize) -> DbResult<Vec<F
 }
 
 /// The article's text from its page, or None when it couldn't be had.
+///
+/// The article opened while the pass after a refresh is on it is fetched by
+/// both: a success always stands, and a failure only lands where nothing has
+/// come yet, so the one that failed can't undo the one that worked.
 pub fn set_full_content(conn: &Connection, id: i64, content: Option<&str>) -> DbResult<()> {
-    let status = if content.is_some() {
-        FullStatus::Fetched
-    } else {
-        FullStatus::Failed
+    match content {
+        Some(c) => conn.execute(
+            "UPDATE articles SET full_content = ?2, full_status = ?3 WHERE id = ?1",
+            params![id, c, FullStatus::Fetched as i64],
+        )?,
+        None => conn.execute(
+            "UPDATE articles SET full_status = ?2
+             WHERE id = ?1 AND (full_status IS NULL OR full_status = ?3)",
+            params![id, FullStatus::Failed as i64, FullStatus::Queued as i64],
+        )?,
     };
-    conn.execute(
-        "UPDATE articles SET full_content = ?2, full_status = ?3 WHERE id = ?1",
-        params![id, content, status as i64],
-    )?;
     Ok(())
 }
 
@@ -1724,6 +1730,9 @@ mod tests {
         );
 
         set_full_content(&conn, queue[0].id, Some("<p>全文</p>")).unwrap();
+        // The same article fetched again at the same time and failing this
+        // time: what worked stays.
+        set_full_content(&conn, queue[0].id, None).unwrap();
         set_full_content(&conn, queue[1].id, None).unwrap();
         let a = article(&conn, queue[0].id).unwrap().unwrap();
         assert_eq!(a.full_status, Some(FullStatus::Fetched));
