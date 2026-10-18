@@ -112,25 +112,54 @@ function RowBody({ a, layout }: { a: ArticleRow; layout: ListLayout }) {
   return text;
 }
 
-function Segment() {
+/** The view's unread count from the sidebar (no extra query); null where 未読のみ doesn't apply. */
+function useUnreadCount(): number | null {
+  return useStore((s) => {
+    const v = s.view;
+    if (v.kind === "all") return s.sidebar.unread;
+    if (v.kind === "feed") return s.sidebar.feeds.find((f) => f.id === v.id)?.unread ?? 0;
+    if (v.kind === "folder") return s.sidebar.folders.find((f) => f.id === v.id)?.unread ?? 0;
+    return null;
+  });
+}
+
+/**
+ * 未読 / すべて: tabs along the header's bottom edge, which list is shown, apart
+ * from the tools (search, order, すべて既読) above them.
+ */
+function UnreadTabs() {
   const unreadOnly = useStore((s) => s.unreadOnly);
   const setUnreadOnly = useStore((s) => s.setUnreadOnly);
   // スター付き and あとで読む list what was kept, read or not: greyed out
-  // there rather than hidden, so the search field doesn't move.
+  // there rather than hidden, so nothing below moves.
   const applies = useStore((s) => filtersUnread(s.view));
-  const seg = (on: boolean) =>
-    `px-2.5 py-0.5 rounded ${unreadOnly === on ? "bg-raised text-fg shadow" : "text-dim enabled:hover:text-fg"}`;
+  const unread = useUnreadCount();
+  const tab = (on: boolean, label: string, count?: number | null) => {
+    const active = applies && unreadOnly === on;
+    return (
+      <button
+        role="tab"
+        aria-selected={active}
+        onClick={() => setUnreadOnly(on)}
+        disabled={!applies}
+        className={`-mb-px flex items-center gap-1.5 border-b-2 px-1 pt-1 pb-1.5 ${
+          active ? "border-accent font-semibold text-fg" : "border-transparent text-dim enabled:hover:text-fg"
+        }`}
+      >
+        {label}
+        {count != null && <span className="text-[11px] font-normal tabular-nums text-dim">{count}</span>}
+      </button>
+    );
+  };
   return (
     <div
-      className={`flex shrink-0 rounded-md bg-bg p-0.5 text-xs ${applies ? "" : "opacity-40"}`}
+      role="tablist"
+      aria-label="表示する記事"
+      className={`flex gap-4 text-[13px] ${applies ? "" : "opacity-40"}`}
       title={applies ? withKey("未読のみ表示の切り替え", "list.unreadOnly") : "スター付きとあとで読むでは、読んだ記事も表示します"}
     >
-      <button className={seg(true)} onClick={() => setUnreadOnly(true)} disabled={!applies}>
-        未読
-      </button>
-      <button className={seg(false)} onClick={() => setUnreadOnly(false)} disabled={!applies}>
-        すべて
-      </button>
+      {tab(true, "未読", unread)}
+      {tab(false, "すべて")}
     </div>
   );
 }
@@ -300,8 +329,7 @@ export function ArticleList() {
           <span className="shrink-0 text-xs tabular-nums text-dim">{articles.length} 件</span>
           <LayoutSegment />
         </div>
-        <div className="flex items-center gap-2 py-2">
-          <Segment />
+        <div className="flex items-center gap-2 pt-2 pb-1.5">
           <SearchField />
           <OrderButton />
           <button
@@ -314,6 +342,7 @@ export function ArticleList() {
             <CheckCheck size={16} />
           </button>
         </div>
+        <UnreadTabs />
       </header>
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="記事">
         {loaded && articles.length === 0 && <Empty />}
