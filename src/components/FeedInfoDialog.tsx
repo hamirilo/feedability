@@ -10,14 +10,20 @@ import { dayOnly, fullDate } from "../lib/format";
 import { useStore } from "../store";
 import { ErrorLine, field, Modal, useSubmit } from "./Modal";
 
+/** The labels are small and grey, the values the size of body text, so the two columns don't read alike. */
+const LABEL = "text-xs text-dim";
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[8.5rem_1fr] items-baseline gap-3 py-1.5">
-      <div className="text-dim">{label}</div>
-      <div className="min-w-0 break-words select-text">{children}</div>
+    <div className="grid grid-cols-[7.5rem_1fr] items-baseline gap-3 py-2">
+      <div className={LABEL}>{label}</div>
+      <div className="min-w-0 break-words text-fg select-text">{children}</div>
     </div>
   );
 }
+
+/** What isn't there: lighter than a value, and unlike a label. */
+const None = ({ children }: { children: React.ReactNode }) => <span className="text-fg/45">{children}</span>;
 
 export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: () => void }) {
   // The sidebar's row is there at once: the field is on screen before the rest arrives.
@@ -49,14 +55,8 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
   const folder = info?.folderId != null ? folders.find((f) => f.id === info.folderId)?.name : null;
   return (
     <Modal title="フィードの情報" onClose={onClose} width={520}>
-      {info && (
-        <Row label="名前">
-          {info.title}
-          {info.originalTitle !== info.title && <span className="ml-2 text-xs text-dim">元の名前：{info.originalTitle}</span>}
-        </Row>
-      )}
-      <form onSubmit={onSubmit} onKeyDown={onKeyDown} className="py-1.5">
-        <label className="mb-1 block text-dim" htmlFor="feed-url">
+      <form onSubmit={onSubmit} onKeyDown={onKeyDown} className="pb-1">
+        <label className={`mb-1.5 block ${LABEL}`} htmlFor="feed-url">
           URL
         </label>
         <div className="flex gap-2">
@@ -82,28 +82,35 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
       {loadError && <p className="text-xs text-danger">{loadError}</p>}
       {info && (
         <>
-          <Row label="サイト">
-            {info.siteUrl ? (
-              <a
-                href={info.siteUrl}
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openInBrowser(info.siteUrl!);
-                }}
-                className="text-accent hover:underline"
-              >
-                {info.siteUrl}
-              </a>
-            ) : (
-              <span className="text-dim">なし</span>
-            )}
-          </Row>
-          <Row label="フォルダ">{folder ?? <span className="text-dim">（フォルダなし）</span>}</Row>
-          <Row label="追加した日">{dayOnly(info.addedAt)}</Row>
-          <Row label="最後に更新した日時">{info.fetchedAt ? fullDate(info.fetchedAt) : <span className="text-dim">まだ更新していません</span>}</Row>
-          <Row label="記事">
-            {info.articles} 件（未読 {info.unread} 件）
-          </Row>
+          {/* Below the reserved error line of the field: no more space above. */}
+          <div className="divide-y divide-line/60 rounded-lg border border-line bg-bg/60 px-3">
+            <Row label="名前">
+              <span className="font-semibold">{info.title}</span>
+              {info.originalTitle !== info.title && <span className="ml-2 text-xs text-dim">元の名前：{info.originalTitle}</span>}
+            </Row>
+            <Row label="サイト">
+              {info.siteUrl ? (
+                <a
+                  href={info.siteUrl}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void openInBrowser(info.siteUrl!);
+                  }}
+                  className="text-accent hover:underline"
+                >
+                  {info.siteUrl}
+                </a>
+              ) : (
+                <None>なし</None>
+              )}
+            </Row>
+            <Row label="フォルダ">{folder ?? <None>なし</None>}</Row>
+            <Row label="追加した日">{dayOnly(info.addedAt)}</Row>
+            <Row label="最後に更新した日時">{info.fetchedAt ? fullDate(info.fetchedAt) : <None>まだ更新していません</None>}</Row>
+            <Row label="記事">
+              {info.articles} 件（未読 {info.unread} 件）
+            </Row>
+          </div>
           {info.error && (
             <div className="mt-3 rounded-md border border-danger/40 bg-danger/10 p-3 text-xs">
               <div className="font-semibold text-danger">更新できませんでした</div>
