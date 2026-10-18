@@ -9,7 +9,7 @@
 
 use crate::db::{self, ArticleQuery, ArticleRow, Sidebar};
 use crate::fetch::{self, Outcome};
-use crate::{feed, opml, sanitize};
+use crate::{feed, fulltext, opml, sanitize};
 use futures_util::StreamExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,9 @@ pub struct AppState {
     /// was added): one pass at a time, run again if asked.
     icons_running: AtomicBool,
     icons_again: AtomicBool,
+    /// The same for the 全文取得 pass.
+    full_running: AtomicBool,
+    full_again: AtomicBool,
 }
 
 pub(crate) fn err(e: impl ToString) -> String {
@@ -232,19 +235,48 @@ pub struct Article {
     read: bool,
     starred: bool,
     later: bool,
+    /// Where `html` comes from (全文取得, docs/FULL_TEXT.md).
+    full_text: FullText,
+}
+
+#[derive(Serialize, Clone, Copy, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum FullText {
+    /// The feed's own text (全文取得 is off, or the page gave nothing).
+    Feed,
+    /// The text from the article's page.
+    Page,
+    /// The feed's text for now: the page is to be fetched (`fetch_full_text`).
+    Pending,
 }
 
 #[tauri::command]
 pub async fn get_article(state: State<'_, AppState>, id: i64) -> CmdResult<Article> {
     let a = with_db(&state, |c| db::article(c, id))?.ok_or("記事が見つかりません")?;
-    let base = a.url.as_deref().or(a.site_url.as_deref());
-    let source = if a.content.trim().is_empty() {
-        &a.summary
+    Ok(reader_article(a))
+}
+
+fn reader_article(a: db::ArticleFull) -> Article {
+    let page = a
+        .full_content
+        .as_deref()
+        .filter(|_| a.full_text && a.full_status == Some(db::FullStatus::Fetched));
+    let full_text = if page.is_some() {
+        FullText::Page
+    } else if page_pending(&a) {
+        FullText::Pending
     } else {
-        &a.content
+        FullText::Feed
     };
-    Ok(Article {
+    let base = a.url.as_deref().or(a.site_url.as_deref());
+    let source = match page {
+        Some(p) => p,
+        None if a.content.trim().is_empty() => &a.summary,
+        None => &a.content,
+    };
+    Article {
         html: sanitize::article_html(source, base),
+        full_text,
         id: a.id,
         feed_id: a.feed_id,
         feed_title: a.feed_title,
@@ -256,7 +288,7 @@ pub async fn get_article(state: State<'_, AppState>, id: i64) -> CmdResult<Artic
         read: a.read,
         starred: a.starred,
         later: a.later,
-    })
+    }
 }
 
 #[tauri::command]
@@ -561,8 +593,10 @@ pub async fn refresh_feeds(
     state.cancel.store(false, Ordering::SeqCst);
     let result = refresh(&app, &state, ids).await;
     state.refreshing.store(false, Ordering::SeqCst);
-    // The refresh is over for the caller; icons follow in the background.
+    // The refresh is over for the caller; icons and the pages of 全文取得
+    // follow in the background.
     spawn_icon_pass(&app);
+    spawn_full_text_pass(&app);
     result
 }
 
@@ -649,6 +683,122 @@ async fn refresh(
 pub async fn cancel_refresh(state: State<'_, AppState>) -> CmdResult<()> {
     state.cancel.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+// --------------------------------------------------------------- 全文取得
+
+/// Articles fetched from one feed after a refresh; older new ones are
+/// fetched when opened (docs/FULL_TEXT.md).
+const FULL_PER_FEED: usize = 20;
+
+#[tauri::command]
+pub async fn set_feed_full_text(state: State<'_, AppState>, id: i64, on: bool) -> CmdResult<()> {
+    with_db(&state, |c| db::set_full_text(c, id, on))
+}
+
+/// The open article's page, fetched now (`FullText::Pending`). On failure
+/// the article comes back with the feed's text, and isn't tried again.
+#[tauri::command]
+pub async fn fetch_full_text(state: State<'_, AppState>, id: i64) -> CmdResult<Article> {
+    let a = with_db(&state, |c| db::article(c, id))?.ok_or("記事が見つかりません")?;
+    if page_pending(&a) {
+        let content = page_article(a.url.as_deref().unwrap_or_default()).await;
+        with_db(&state, |c| db::set_full_content(c, id, content.as_deref()))?;
+    }
+    let a = with_db(&state, |c| db::article(c, id))?.ok_or("記事が見つかりません")?;
+    Ok(reader_article(a))
+}
+
+/// The feed has 全文取得 on and the article's page hasn't been tried yet.
+fn page_pending(a: &db::ArticleFull) -> bool {
+    a.full_text && a.url.is_some() && matches!(a.full_status, None | Some(db::FullStatus::Queued))
+}
+
+/// The article's HTML from its page, or None (logged) when there is none.
+async fn page_article(url: &str) -> Option<String> {
+    let res = match fetch::get_page(url).await {
+        Ok(res) => res,
+        Err(e) => {
+            log::warn!("full text {url}: {e}");
+            return None;
+        }
+    };
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        let html = fulltext::decode(&res.body, res.content_type.as_deref());
+        fulltext::extract(&html, &res.url)
+    })
+    .await
+    .ok()
+    .flatten();
+    if out.is_none() {
+        log::warn!("full text {url}: no article found");
+    }
+    out
+}
+
+fn spawn_full_text_pass(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        if state.full_running.swap(true, Ordering::SeqCst) {
+            state.full_again.store(true, Ordering::SeqCst);
+            return;
+        }
+        loop {
+            state.full_again.store(false, Ordering::SeqCst);
+            fetch_queued_pages(&app, &state).await;
+            if !state.full_again.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+        state.full_running.store(false, Ordering::SeqCst);
+    });
+}
+
+/// The queued articles' pages: one at a time per host (a feed's articles are
+/// mostly on one site), up to `PARALLEL` hosts at once. Each one done goes
+/// out as `full-text` with the article's id, for the reader showing it.
+async fn fetch_queued_pages(app: &AppHandle, state: &AppState) {
+    let targets = match with_db(state, |c| db::take_full_queue(c, FULL_PER_FEED)) {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("full text: {e}");
+            return;
+        }
+    };
+    if targets.is_empty() {
+        return;
+    }
+    let mut by_host: Vec<(String, Vec<db::FullTarget>)> = Vec::new();
+    for t in targets {
+        let host = t.url.as_deref().map(host_of).unwrap_or_default();
+        match by_host.iter_mut().find(|(h, _)| *h == host) {
+            Some((_, list)) => list.push(t),
+            None => by_host.push((host, vec![t])),
+        }
+    }
+    let total: usize = by_host.iter().map(|(_, l)| l.len()).sum();
+    let fetched = futures_util::stream::iter(by_host.into_iter().map(|(_, list)| async move {
+        let mut fetched = 0;
+        for t in list {
+            let content = match &t.url {
+                Some(url) => page_article(url).await,
+                None => None,
+            };
+            match with_db(state, |c| db::set_full_content(c, t.id, content.as_deref())) {
+                Ok(()) => {
+                    fetched += usize::from(content.is_some());
+                    let _ = app.emit("full-text", t.id);
+                }
+                Err(e) => log::warn!("full text {}: {e}", t.id),
+            }
+        }
+        fetched
+    }))
+    .buffer_unordered(PARALLEL)
+    .fold(0, |n, f| async move { n + f })
+    .await;
+    log::info!("full text: {fetched} of {total} articles");
 }
 
 // ----------------------------------------------------------------- icons

@@ -1,0 +1,55 @@
+# 全文取得
+
+**状態**：対応済み。ロードマップのフェーズ 4。下の 3 つの決定は 2026-10-18 に採用し、ADR-0001 を更新した。
+crate の比較は [research/readability.md](research/readability.md)。
+
+困っていること：ニュースサイトに多い、要約だけを配るフィードは、アプリの中で数行しか読めない。続きを読むにはブラウザへ移る。
+
+## 決定（2026-10-18 に採用）
+
+| # | 論点 | 決定 |
+|---|---|---|
+| 1 | ADR-0001 の範囲を広げる | 全文取得をオンにしたフィードについて、記事のページを取りに行く。文面は [ADR-0001](../decisions/adr-0001-fetching-feeds.md) の「決定」と「理由」 |
+| 2 | 本文を抜き出す crate | **`dom_smoothie`**（MIT）。比べた結果は research/readability.md |
+| 3 | 手元のネットワークのアドレス | 記事のページだけ、`localhost`・ループバック・プライベート・リンクローカルの IP を直接書いた URL は取りに行かない（下の「守ること」）。今のフィードと画像の取得は変えない |
+
+## 動き
+
+- フィードごとのオン / オフ。既定はオフ。切り替えるのは 3 か所：フィードの右クリック「全文を取得する / 全文の取得をやめる」、メニューの フィード › 同じ項目（チェック付き）、フィードの情報（⌘I）のチェックボックス「記事のページから本文を取得する」。コマンド表の `feed.fullText`
+- オンのフィードは、更新で **新しく保存した記事** の記事のページを、更新のあとに裏で取る（アイコンと同じく、更新の終わりを待たせない）。本文を抜き出して `articles.full_content` に入れ、表示するときは今の本文と同じく `sanitize::article_html` を通す（相対リンクの基準は記事の URL）
+- 1 回の更新で 1 つのフィードから取るのは新しいほうから 20 件まで（`FULL_PER_FEED`）。それより古い新着は、開いたときに取る
+- オンにしたとき、すでにある記事は取りに行かない。開いたときに、その 1 件だけ取る
+- 表示は `full_content` があればそちら、無ければフィードの本文。本文の帯（「Aa」・既読・スター・あとで読む・ブラウザ）には何も足さない（UI Standard §10）。日付の下に小さく、取得中は「記事のページから本文を取得しています…」、取れたら「記事のページから取得した本文」と出す。届いたら本文だけが差し替わり、既読・スター・あとで読むはそのまま
+- 失敗したら（取得できない、HTML でない、抜き出せない、100 字に満たない）フィードの本文のまま見せる。エラーはフィードのエラーにも画面のトーストにもせず、ログに残すだけ（フィード自体は更新できているので）。失敗した記事は取り直さない
+- オフにすると、取得を待っていた記事は取りに行かず、表示もフィードの本文に戻る。取得済みの本文は消さないので、またオンにすれば出る
+- 同じホストへは 1 件ずつ、ホストは 6 つまで同時に（フィードの更新と同じ `PARALLEL`）
+- Cookie は持たない（今の reqwest のとおり）。ログインが要るページ・有料の記事は、ログインの画面が抜き出されるか失敗して要約のまま。ログインはこのアプリの範囲の外
+- `robots.txt` は見ない。ユーザーがフィードごとにオンにした記事を、ブラウザで開く代わりに 1 回取るだけなので
+- JavaScript で本文を描くページ（SPA）からは抜き出せない。要約のまま
+- stockroom へ送る（[STOCKROOM.md](STOCKROOM.md)）Markdown は、全文があれば全文から作る（段階 1 を作るときに）
+
+## 守ること
+
+- 取得は `fetch::get_page` だけ。上限 **5 MB**（`MAX_ARTICLE_PAGE_BYTES`）。Accept は `text/html`。Content-Type が HTML でない応答は捨てる
+- 文字コードは Content-Type の charset、無ければページの `<meta charset>`（先頭 2 KB）、無ければ UTF-8。BOM があればそれが勝つ（`fulltext::decode`、encoding_rs）
+- 抜き出しは `max_elements_to_parse` を 3 万にし、重いページで固まらないようにする。抜き出しは `spawn_blocking` で、ほかの取得を止めない
+- 記事のページの URL は、フィードに書かれた記事のリンクだけ。http / https だけ
+- 手元のネットワーク（決定 #3）：URL のホストが `localhost`（`*.localhost` も）、または IP を直接書いたもので、ループバック・プライベート（10/8、172.16/12、192.168/16、fc00::/7）・リンクローカル（169.254/16、fe80::/10）・未指定のものは取りに行かない（`fetch::is_local`）。転送の先にも同じ検査をする（`get_page` 用の reqwest のクライアントは転送の規則が別）。名前を引いた結果の IP までは見ない（そこまでするなら reqwest の resolver を差し替えることになる。今回はしない）
+  - 理由：記事のリンクはフィードを配る人が自由に書ける。画像と違い、取ったページの中身は保存されて画面に出る。手元のルーターの管理画面や、127.0.0.1 で待ち受ける stockroom の受付などを取らせないため
+
+## データ
+
+- `feeds.full_text INTEGER NOT NULL DEFAULT 0`、`articles.full_content TEXT`、`articles.full_status INTEGER`
+- `full_status`（`db::FullStatus`）：NULL は「まだ何もしていない」（オンのフィードなら開いたときに取る）、0 は取得待ち（オンのフィードの新着。更新のあとに取る）、1 は取得済み、2 は失敗
+- 取得待ちは、取り終えるまで 0 のまま。アプリを終えて途中で止まった分は、次の更新のあとに取る
+- スキーマ v5（`PRAGMA user_version = 5`）で列と、取得待ちだけの部分インデックスを足す。古い版のアプリで開いても、列を無視するだけで壊れない
+- フィードを取り直して同じ記事が来ても、`full_content` は消さない
+- 大きさ：1 件あたり数 KB〜数十 KB。古い記事の整理（`db::purge`）で記事と一緒に消える
+
+## 実装
+
+- `src-tauri/src/fulltext.rs`：`decode`（文字コード）と `extract`（`dom_smoothie`。使うのはここだけ）
+- `src-tauri/src/fetch.rs`：`get_page`、`is_local`
+- `src-tauri/src/db.rs`：`set_full_text`、`take_full_queue`、`set_full_content`。`FeedRow` / `FeedInfo` / `ArticleFull` に `full_text` など
+- `src-tauri/src/commands.rs`：`set_feed_full_text`、`fetch_full_text`（開いたとき）、更新のあとの `spawn_full_text_pass`。取れた記事ごとに `full-text` のイベント（記事の id）を出す。`Article.fullText` は `"feed"`・`"page"`・`"pending"`
+- フロント：`store.ts` の `toggleFullText`・`loadFullText`（開いた記事が `pending` なら取る、`full-text` が届いたら読み直す）、`Reader.tsx` の 1 行、`FeedInfoDialog.tsx` のチェックボックス。モック（`src/dev/mockBackend.ts`）は「世界のニュース」がオンで、id が偶数の記事は取得に失敗する

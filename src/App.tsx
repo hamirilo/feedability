@@ -27,6 +27,7 @@ export default function App() {
     const stopUpdate = scheduleUpdateCheck();
     let unlisten: (() => void) | undefined;
     let unlistenIcons: (() => void) | undefined;
+    let unlistenFullText: (() => void) | undefined;
     api
       .onRefreshProgress((p) => useStore.getState().setRefreshing(p))
       .then((u) => (unlisten = u))
@@ -36,12 +37,18 @@ export default function App() {
       .onIconsChanged(() => void useStore.getState().reloadIcons())
       .then((u) => (unlistenIcons = u))
       .catch((e) => warn("icons changed", e));
+    // Pages of 全文取得 arrive in the background too, one article at a time.
+    api
+      .onFullText((id) => void useStore.getState().loadFullText(id))
+      .then((u) => (unlistenFullText = u))
+      .catch((e) => warn("full text", e));
     void useStore.getState().init();
     return () => {
       uninstallMenu();
       stopUpdate();
       unlisten?.();
       unlistenIcons?.();
+      unlistenFullText?.();
     };
   }, []);
 

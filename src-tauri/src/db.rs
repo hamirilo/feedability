@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 4;
+const VERSION: i64 = 5;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -143,6 +143,20 @@ fn migrate(conn: &Connection) -> DbResult<()> {
              COMMIT;",
         )?;
     }
+    if version < 5 {
+        // 全文取得 (docs/FULL_TEXT.md): `feeds.full_text` is the user's switch
+        // per feed. `articles.full_content` is the article's HTML from its
+        // page, as extracted (sanitized when shown), and `full_status` where
+        // that stands (`FullStatus`). An older app ignores the columns.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE feeds ADD COLUMN full_text INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE articles ADD COLUMN full_content TEXT;
+             ALTER TABLE articles ADD COLUMN full_status INTEGER;
+             CREATE INDEX IF NOT EXISTS articles_full_queued ON articles(full_status) WHERE full_status = 0;
+             COMMIT;",
+        )?;
+    }
     if version < VERSION {
         conn.pragma_update(None, "user_version", VERSION)?;
     }
@@ -170,6 +184,8 @@ pub struct FeedRow {
     pub unread: i64,
     pub error: Option<String>,
     pub fetched_at: Option<i64>,
+    /// 全文取得 is on.
+    pub full_text: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -185,7 +201,7 @@ pub struct Sidebar {
 pub fn sidebar(conn: &Connection) -> DbResult<Sidebar> {
     let mut stmt = conn.prepare(
         "SELECT f.id, COALESCE(f.custom_title, f.title), f.url, f.site_url, f.folder_id, f.error, f.fetched_at,
-                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0)
+                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0), f.full_text
          FROM feeds f
          ORDER BY COALESCE(f.custom_title, f.title) COLLATE NOCASE, f.id",
     )?;
@@ -200,6 +216,7 @@ pub fn sidebar(conn: &Connection) -> DbResult<Sidebar> {
                 error: r.get(5)?,
                 fetched_at: r.get(6)?,
                 unread: r.get(7)?,
+                full_text: r.get(8)?,
             })
         })?
         .collect::<DbResult<Vec<_>>>()?;
@@ -421,6 +438,7 @@ pub struct FeedInfo {
     pub error: Option<String>,
     pub articles: i64,
     pub unread: i64,
+    pub full_text: bool,
 }
 
 pub fn feed_info(conn: &Connection, id: i64) -> DbResult<Option<FeedInfo>> {
@@ -428,7 +446,7 @@ pub fn feed_info(conn: &Connection, id: i64) -> DbResult<Option<FeedInfo>> {
         "SELECT f.id, COALESCE(f.custom_title, f.title), f.title, f.custom_title, f.url, f.site_url,
                 f.folder_id, f.added_at, f.fetched_at, f.error,
                 (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id),
-                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0)
+                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0), f.full_text
          FROM feeds f WHERE f.id = ?1",
         [id],
         |r| {
@@ -445,6 +463,7 @@ pub fn feed_info(conn: &Connection, id: i64) -> DbResult<Option<FeedInfo>> {
                 error: r.get(9)?,
                 articles: r.get(10)?,
                 unread: r.get(11)?,
+                full_text: r.get(12)?,
             })
         },
     )
@@ -575,8 +594,9 @@ pub struct NewArticle {
 }
 
 /// Adds the feed's new articles and updates the ones it already had (a
-/// corrected title or text). Read and starred stay as they were. Returns how
-/// many were new.
+/// corrected title or text). Read and starred stay as they were, and so does
+/// the text from the page (全文取得). New articles of a feed with 全文取得 on
+/// are queued for it. Returns how many were new.
 pub fn store_articles(
     conn: &mut Connection,
     feed_id: i64,
@@ -588,8 +608,10 @@ pub fn store_articles(
     {
         let mut exists = tx.prepare("SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2")?;
         let mut insert = tx.prepare(
-            "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at, thumb_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
+            "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at, thumb_url,
+                                   full_status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10,
+                     (SELECT CASE WHEN full_text = 1 THEN 0 END FROM feeds WHERE id = ?1))",
         )?;
         let mut update = tx.prepare(
             "UPDATE articles SET url = ?2, title = ?3, author = ?4, summary = ?5, content = ?6, seen_at = ?7,
@@ -814,12 +836,17 @@ pub struct ArticleFull {
     pub read: bool,
     pub starred: bool,
     pub later: bool,
+    /// The feed has 全文取得 on.
+    pub full_text: bool,
+    pub full_status: Option<FullStatus>,
+    pub full_content: Option<String>,
 }
 
 pub fn article(conn: &Connection, id: i64) -> DbResult<Option<ArticleFull>> {
     conn.query_row(
         "SELECT a.id, a.feed_id, COALESCE(f.custom_title, f.title), f.site_url, a.title, a.url, a.author,
-                a.content, a.summary, a.published, a.read, a.starred, a.later_at IS NOT NULL
+                a.content, a.summary, a.published, a.read, a.starred, a.later_at IS NOT NULL,
+                f.full_text, a.full_status, a.full_content
          FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.id = ?1",
         [id],
         |r| {
@@ -837,10 +864,110 @@ pub fn article(conn: &Connection, id: i64) -> DbResult<Option<ArticleFull>> {
                 read: r.get(10)?,
                 starred: r.get(11)?,
                 later: r.get(12)?,
+                full_text: r.get(13)?,
+                full_status: r.get::<_, Option<i64>>(14)?.and_then(FullStatus::from_db),
+                full_content: r.get(15)?,
             })
         },
     )
     .optional()
+}
+
+// --------------------------------------------------------------- 全文取得
+
+/// Where an article's text from its page stands (`articles.full_status`).
+/// NULL: nothing asked for; it is fetched when the article is opened, if its
+/// feed has 全文取得 on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FullStatus {
+    /// New in a feed with 全文取得 on: the pass after the refresh fetches it.
+    Queued = 0,
+    Fetched = 1,
+    /// Fetched or extracted without success; not tried again.
+    Failed = 2,
+}
+
+impl FullStatus {
+    fn from_db(v: i64) -> Option<Self> {
+        match v {
+            0 => Some(Self::Queued),
+            1 => Some(Self::Fetched),
+            2 => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// Turns 全文取得 on or off. Articles already there are not queued (they are
+/// fetched when opened); turning it off drops what was still queued. Text
+/// already fetched stays, for when it is turned on again.
+pub fn set_full_text(conn: &Connection, feed_id: i64, on: bool) -> DbResult<()> {
+    conn.execute(
+        "UPDATE feeds SET full_text = ?2 WHERE id = ?1",
+        params![feed_id, on],
+    )?;
+    if !on {
+        conn.execute(
+            "UPDATE articles SET full_status = NULL WHERE feed_id = ?1 AND full_status = 0",
+            [feed_id],
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct FullTarget {
+    pub id: i64,
+    pub url: Option<String>,
+}
+
+/// The queued articles to fetch now, newest first, at most `per_feed` of
+/// each feed. The rest are taken off the queue: they are fetched when opened
+/// (docs/FULL_TEXT.md). The ones returned stay queued until
+/// `set_full_content`, so a pass cut short is picked up by the next.
+pub fn take_full_queue(conn: &mut Connection, per_feed: usize) -> DbResult<Vec<FullTarget>> {
+    let tx = conn.transaction()?;
+    let mut targets = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT a.id, a.url, a.feed_id FROM articles a
+             WHERE a.full_status = 0 ORDER BY a.feed_id, a.published DESC, a.id DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get(1)?, r.get::<_, i64>(2)?))
+            })?
+            .collect::<DbResult<Vec<(i64, Option<String>, i64)>>>()?;
+        let mut unqueue = tx.prepare("UPDATE articles SET full_status = NULL WHERE id = ?1")?;
+        let (mut feed, mut n) = (None, 0);
+        for (id, url, feed_id) in rows {
+            if feed != Some(feed_id) {
+                (feed, n) = (Some(feed_id), 0);
+            }
+            n += 1;
+            if n <= per_feed {
+                targets.push(FullTarget { id, url });
+            } else {
+                unqueue.execute([id])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(targets)
+}
+
+/// The article's text from its page, or None when it couldn't be had.
+pub fn set_full_content(conn: &Connection, id: i64, content: Option<&str>) -> DbResult<()> {
+    let status = if content.is_some() {
+        FullStatus::Fetched
+    } else {
+        FullStatus::Failed
+    };
+    conn.execute(
+        "UPDATE articles SET full_content = ?2, full_status = ?3 WHERE id = ?1",
+        params![id, content, status as i64],
+    )?;
+    Ok(())
 }
 
 pub fn set_read(conn: &mut Connection, ids: &[i64], read: bool) -> DbResult<()> {
@@ -1504,5 +1631,94 @@ mod tests {
                     == 0
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn full_text_queues_new_articles_only() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        store_articles(&mut conn, feed, &[art("old", "Old", 1)]).unwrap();
+        let id = |c: &Connection, t: &str| -> i64 {
+            c.query_row("SELECT id FROM articles WHERE title = ?1", [t], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        let old = id(&conn, "Old");
+
+        // Turned on: what was there waits to be opened; new ones are queued.
+        set_full_text(&conn, feed, true).unwrap();
+        assert!(sidebar(&conn).unwrap().feeds[0].full_text);
+        assert!(feed_info(&conn, feed).unwrap().unwrap().full_text);
+        let news: Vec<NewArticle> = (0..25)
+            .map(|i| art(&format!("n{i}"), &format!("N{i}"), 10 + i))
+            .collect();
+        store_articles(&mut conn, feed, &news).unwrap();
+        assert_eq!(article(&conn, old).unwrap().unwrap().full_status, None);
+
+        // 20 of them, newest first; the other 5 are left for when they are opened.
+        let queue = take_full_queue(&mut conn, 20).unwrap();
+        assert_eq!(queue.len(), 20);
+        assert_eq!(queue[0].id, id(&conn, "N24"));
+        assert_eq!(queue[0].url.as_deref(), Some("https://example.com/n24"));
+        // Taken, they stay queued until fetched (a pass cut short by quitting
+        // the app is picked up by the next one).
+        assert_eq!(take_full_queue(&mut conn, 20).unwrap().len(), 20);
+        assert_eq!(
+            article(&conn, id(&conn, "N0"))
+                .unwrap()
+                .unwrap()
+                .full_status,
+            None
+        );
+        assert_eq!(
+            article(&conn, queue[0].id).unwrap().unwrap().full_status,
+            Some(FullStatus::Queued)
+        );
+
+        set_full_content(&conn, queue[0].id, Some("<p>全文</p>")).unwrap();
+        set_full_content(&conn, queue[1].id, None).unwrap();
+        let a = article(&conn, queue[0].id).unwrap().unwrap();
+        assert_eq!(a.full_status, Some(FullStatus::Fetched));
+        assert_eq!(a.full_content.as_deref(), Some("<p>全文</p>"));
+        assert!(a.full_text);
+        assert_eq!(
+            article(&conn, queue[1].id).unwrap().unwrap().full_status,
+            Some(FullStatus::Failed)
+        );
+
+        // The feed listing the article again keeps the text from the page.
+        store_articles(&mut conn, feed, &news).unwrap();
+        let a = article(&conn, queue[0].id).unwrap().unwrap();
+        assert_eq!(a.full_content.as_deref(), Some("<p>全文</p>"));
+
+        // Turned off: nothing new is queued, the queue is dropped, the text stays.
+        store_articles(&mut conn, feed, &[art("q", "Q", 50)]).unwrap();
+        set_full_text(&conn, feed, false).unwrap();
+        store_articles(&mut conn, feed, &[art("r", "R", 60)]).unwrap();
+        assert!(take_full_queue(&mut conn, 20).unwrap().is_empty());
+        assert_eq!(
+            article(&conn, id(&conn, "Q")).unwrap().unwrap().full_status,
+            None
+        );
+        let a = article(&conn, queue[0].id).unwrap().unwrap();
+        assert!(!a.full_text);
+        assert_eq!(a.full_content.as_deref(), Some("<p>全文</p>"));
+    }
+
+    #[test]
+    fn a_version_4_file_gets_the_full_text_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        migrate(&conn).unwrap();
+        // Run again as if opened by this version once more: nothing to do.
+        migrate(&conn).unwrap();
+        let v: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, VERSION);
+        conn.prepare("SELECT full_text FROM feeds").unwrap();
+        conn.prepare("SELECT full_content, full_status FROM articles")
+            .unwrap();
     }
 }

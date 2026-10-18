@@ -21,7 +21,7 @@ v0.1.0 のあとの機能追加の計画。優先するのは **読む体験** �
 | 1 | 本文の表示の調整（文字の大きさ・行間・本文の幅）（対応済み、[READING.md](READING.md)） | 読む | S | — |
 | 2 | 既読にするタイミングの設定（対応済み、[READING.md](READING.md)） | 読む | S | — |
 | 3 | 一覧のレイアウト（標準・コンパクト・画像付き）（対応済み、[LIST_LAYOUT.md](LIST_LAYOUT.md)） | 読む | M | — |
-| 4 | 全文取得（要約だけのフィードの本文をページから取る） | 読む | L | 依存の追加、ADR-0001 の見直し |
+| 4 | 全文取得（要約だけのフィードの本文をページから取る）（対応済み、[FULL_TEXT.md](FULL_TEXT.md)） | 読む | L | —（決定済み：ADR-0001 を更新、`dom_smoothie`） |
 | 5 | 記事を stockroom へ送る（[STOCKROOM.md](STOCKROOM.md)） | 連携 | S + M | — （決定済み：[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)、`htmd`、stockroom の受け口） |
 | 6 | `feed:` リンクと共有メニューから購読 | 連携 | M | capabilities の追加（deep link） |
 | 7 | ブラウザ拡張から購読・記事を送る | 連携 | L | 待ち受けポート |
@@ -80,6 +80,8 @@ RSS リーダーとして毎日使うときの土台。読む体験（フェー�
 - 1 万件で固まらないこと（`examples/seed.rs` で確かめる）。縮小版は見えている行の分だけ取る
 
 ## フェーズ 4：全文取得（L）
+
+対応済み。決めたことは [FULL_TEXT.md](FULL_TEXT.md)（抜き出しは `dom_smoothie`、`user_version` は 5、手元のネットワークの IP は取らない）。以下は計画のときのもの。
 
 要約だけを配るフィード（ニュースサイトに多い）を、アプリの中で全文で読めるようにする。
 

@@ -52,6 +52,9 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
     setUrl(next.url);
   });
 
+  const toggleFullText = useStore((s) => s.toggleFullText);
+  const fullText = row?.fullText ?? info?.fullText ?? false;
+
   const folder = info?.folderId != null ? folders.find((f) => f.id === info.folderId)?.name : null;
   return (
     <Modal title="フィードの情報" onClose={onClose} width={520}>
@@ -109,6 +112,15 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
             <Row label="最後に更新した日時">{info.fetchedAt ? fullDate(info.fetchedAt) : <None>まだ更新していません</None>}</Row>
             <Row label="記事">
               {info.articles} 件（未読 {info.unread} 件）
+            </Row>
+            <Row label="全文取得">
+              <label className="flex items-start gap-2">
+                <input type="checkbox" className="mt-1" checked={fullText} onChange={() => void toggleFullText(feedId)} />
+                <span>
+                  記事のページから本文を取得する
+                  <span className="mt-0.5 block text-xs text-dim">要約だけのフィード向け。新しい記事は更新のときに、それまでの記事は開いたときに取得します</span>
+                </span>
+              </label>
             </Row>
           </div>
           {info.error && (

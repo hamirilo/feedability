@@ -32,6 +32,9 @@ type MockArticle = Omit<ArticleRow, "feedTitle"> & {
   author: string | null;
   /** When it went into あとで読む (db.rs `later_at`). */
   laterAt: number | null;
+  /** 全文取得 (db.rs `full_status` / `full_content`): null, nothing asked for yet. */
+  fullStatus: "queued" | "fetched" | "failed" | null;
+  fullHtml: string | null;
 };
 
 const folders: Omit<FolderRow, "unread">[] = [
@@ -39,11 +42,11 @@ const folders: Omit<FolderRow, "unread">[] = [
   { id: 2, name: "ニュース" },
 ];
 const feeds: MockFeed[] = [
-  { id: 1, title: "Rust Blog", url: "https://blog.rust-lang.org/feed.xml", siteUrl: "https://blog.rust-lang.org/", folderId: 1, error: null, fetchedAt: Date.now() - 600_000 },
-  { id: 2, title: "Tauri", url: "https://tauri.app/blog/rss.xml", siteUrl: "https://tauri.app/", folderId: 1, error: null, fetchedAt: Date.now() - 600_000 },
-  { id: 3, title: "世界のニュース", url: "https://news.example.jp/rss", siteUrl: "https://news.example.jp/", folderId: 2, error: null, fetchedAt: Date.now() - 600_000 },
-  { id: 4, title: "止まったブログ", url: "https://gone.example.com/feed", siteUrl: null, folderId: null, error: "見つかりません（HTTP 404）\nhttps://gone.example.com/feed は 3 日前から応答がありません。サイトが移転した場合は、フィードの情報から新しい URL に変更できます。", fetchedAt: Date.now() - 3_600_000 },
-  { id: 5, title: "個人の日記", url: "https://diary.example.com/atom.xml", siteUrl: "https://diary.example.com/", folderId: null, error: null, fetchedAt: Date.now() - 600_000 },
+  { id: 1, title: "Rust Blog", url: "https://blog.rust-lang.org/feed.xml", siteUrl: "https://blog.rust-lang.org/", folderId: 1, error: null, fetchedAt: Date.now() - 600_000, fullText: false },
+  { id: 2, title: "Tauri", url: "https://tauri.app/blog/rss.xml", siteUrl: "https://tauri.app/", folderId: 1, error: null, fetchedAt: Date.now() - 600_000, fullText: false },
+  { id: 3, title: "世界のニュース", url: "https://news.example.jp/rss", siteUrl: "https://news.example.jp/", folderId: 2, error: null, fetchedAt: Date.now() - 600_000, fullText: true },
+  { id: 4, title: "止まったブログ", url: "https://gone.example.com/feed", siteUrl: null, folderId: null, error: "見つかりません（HTTP 404）\nhttps://gone.example.com/feed は 3 日前から応答がありません。サイトが移転した場合は、フィードの情報から新しい URL に変更できます。", fetchedAt: Date.now() - 3_600_000, fullText: false },
+  { id: 5, title: "個人の日記", url: "https://diary.example.com/atom.xml", siteUrl: "https://diary.example.com/", folderId: null, error: null, fetchedAt: Date.now() - 600_000, fullText: false },
 ];
 const articles: MockArticle[] = [];
 /** Icons already drawn, by feed id (a feed's title is its first letter). */
@@ -70,6 +73,10 @@ function addArticle(feedId: number, published: number, n: number) {
     starred: n % 11 === 0,
     later: n % 13 === 0,
     laterAt: n % 13 === 0 ? published - n : null,
+    // The seeded articles of 世界のニュース (全文取得 on) were there before it
+    // was turned on: fetched when opened.
+    fullStatus: null,
+    fullHtml: null,
     author: n % 2 ? "山田 太郎" : null,
     // One in four without a picture, for the 画像付き layout.
     thumbUrl: n % 4 === 0 ? null : `https://example.com/photo-${id}.png`,
@@ -139,6 +146,26 @@ function drawIcon(id: number, title: string): string {
   return url;
 }
 
+/** As commands.rs `reader_article`: the page's text when there is one. */
+function readerArticle(x: MockArticle): Article {
+  const f = feeds.find((y) => y.id === x.feedId)!;
+  const { laterAt, fullStatus, fullHtml, ...rest } = x;
+  const page = f.fullText && fullStatus === "fetched" ? fullHtml : null;
+  const fullText = page ? "page" : f.fullText && x.url && (fullStatus === null || fullStatus === "queued") ? "pending" : "feed";
+  return { ...rest, html: page ?? rest.html, later: laterAt !== null, feedTitle: f.title, siteUrl: f.siteUrl, fullText };
+}
+
+/** The article's page "fetched": a longer text, or (articles with an even id) nothing found. */
+function fetchPage(x: MockArticle) {
+  if (x.id % 2 === 0) {
+    x.fullStatus = "failed";
+    x.fullHtml = null;
+    return;
+  }
+  x.fullStatus = "fetched";
+  x.fullHtml = `${x.html}<h2>続き（ページから取得）</h2>${`<p>${LOREM}</p>`.repeat(6)}`;
+}
+
 /** The icon pass finishing a moment after a subscription or a URL change. */
 function iconsSoon() {
   setTimeout(() => void emit("icons-changed", null), 1500);
@@ -156,6 +183,16 @@ async function refresh(ids: number[] | null): Promise<RefreshSummary> {
       addArticle(f.id, Date.now(), articleSeq + 1);
       added++;
       f.fetchedAt = Date.now();
+      if (f.fullText) {
+        // The pass after the refresh: the page arrives a moment later.
+        const x = articles.find((y) => y.id === articleSeq)!;
+        x.fullStatus = "queued";
+        setTimeout(() => {
+          if (x.fullStatus !== "queued") return;
+          fetchPage(x);
+          void emit("full-text", x.id);
+        }, 2500);
+      }
     }
     await emit("refresh-progress", { done: i + 1, total: targets.length });
   }
@@ -195,9 +232,22 @@ async function handle(cmd: string, a: any): Promise<unknown> {
     case "get_article": {
       const x = articles.find((y) => y.id === a.id);
       if (!x) throw "記事が見つかりません";
-      const f = feeds.find((y) => y.id === x.feedId)!;
-      const { laterAt, ...rest } = x;
-      return { ...rest, later: laterAt !== null, feedTitle: f.title, siteUrl: f.siteUrl } satisfies Article;
+      return readerArticle(x);
+    }
+    case "set_feed_full_text": {
+      const f = feeds.find((x) => x.id === a.id)!;
+      f.fullText = a.on;
+      if (!a.on) for (const x of articles) if (x.feedId === f.id && x.fullStatus === "queued") x.fullStatus = null;
+      return null;
+    }
+    case "fetch_full_text": {
+      const x = articles.find((y) => y.id === a.id);
+      if (!x) throw "記事が見つかりません";
+      if (readerArticle(x).fullText === "pending") {
+        await sleep(900);
+        fetchPage(x);
+      }
+      return readerArticle(x);
     }
     case "set_read":
       for (const x of articles) if (a.ids.includes(x.id)) x.read = a.read;
@@ -243,7 +293,7 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       if (url.includes("404")) throw "見つかりません（HTTP 404）";
       const id = ++feedSeq;
       const title = url.replace(/^https?:\/\//, "").split("/")[0];
-      feeds.push({ id, title, url, siteUrl: null, folderId: a.folderId, error: null, fetchedAt: Date.now(), addedAt: Date.now() });
+      feeds.push({ id, title, url, siteUrl: null, folderId: a.folderId, error: null, fetchedAt: Date.now(), addedAt: Date.now(), fullText: false });
       for (let n = 0; n < 5; n++) addArticle(id, Date.now() - n * 3_600_000, n + 1);
       iconsSoon();
       return { feedId: id, title, articles: 5 } satisfies Added;
@@ -265,6 +315,7 @@ async function handle(cmd: string, a: any): Promise<unknown> {
         error: f.error,
         articles: own.length,
         unread: own.filter((x) => !x.read).length,
+        fullText: f.fullText,
       } satisfies FeedInfo;
     }
     case "change_feed_url": {

@@ -53,9 +53,12 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 # Several feeds fetched at a time while refreshing (fetch.rs).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-
-[dev-dependencies]
-# Writing a Shift_JIS feed for the tests (feed-rs reads it through quick-xml).
+# Full text (全文取得): the article out of its page (fulltext.rs). Built on dom_query and
+# html5ever 0.39, which Tauri already has in the tree (at build time); see
+# docs/research/readability.md.
+dom_smoothie = "0.18"
+# Full text: a page in its own encoding (Shift_JIS, EUC-JP) read as text.
+# Already in the tree through quick-xml.
 encoding_rs = "0.8"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

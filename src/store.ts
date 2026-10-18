@@ -198,6 +198,10 @@ export interface State {
   toggleStar: () => Promise<void>;
   /** Into or out of あとで読む (L). */
   toggleLater: () => Promise<void>;
+  /** 全文取得 on or off for a feed (docs/FULL_TEXT.md). */
+  toggleFullText: (feedId: number) => Promise<void>;
+  /** The open article again when its page has arrived (`full-text`, or fetched on opening). */
+  loadFullText: (id: number) => Promise<void>;
   markAllRead: () => Promise<void>;
   /** The unread articles above / below the selected one. */
   markAbove: () => Promise<void>;
@@ -524,6 +528,7 @@ export const useStore = create<State>((set, get) => {
         const article = await api.getArticle(id);
         if (seq !== articleSeq) return;
         set({ article });
+        if (article.fullText === "pending") void get().loadFullText(id);
         if (finishOnLeave !== id) finishOnLeave = article.later ? id : null;
         if (article.read) return;
         const { markReadOn } = get().settings;
@@ -591,6 +596,41 @@ export const useStore = create<State>((set, get) => {
         void get().reloadSidebar();
       } catch (e) {
         fail(e);
+      }
+    },
+
+    toggleFullText: async (feedId) => {
+      const on = !get().sidebar.feeds.find((f) => f.id === feedId)?.fullText;
+      try {
+        await api.setFeedFullText(feedId, on);
+        await get().reloadSidebar();
+        get().toast(on ? "全文取得をオンにしました。記事のページから本文を取得します" : "全文取得をオフにしました");
+        // The open article of that feed follows at once.
+        const a = get().article;
+        if (a?.feedId === feedId) {
+          const next = await api.getArticle(a.id);
+          if (get().article?.id !== a.id) return;
+          set({ article: { ...get().article!, html: next.html, fullText: next.fullText } });
+          if (next.fullText === "pending") void get().loadFullText(a.id);
+        }
+      } catch (e) {
+        fail(e);
+      }
+    },
+
+    loadFullText: async (id) => {
+      try {
+        const current = get().article;
+        if (current?.id !== id || current.fullText === "page") return;
+        // Asked while the article was open: fetched now. From the pass: there already.
+        const next = current.fullText === "pending" ? await api.fetchFullText(id) : await api.getArticle(id);
+        const a = get().article;
+        if (a?.id !== id) return;
+        // Only the text: read, star and あとで読む may have changed meanwhile.
+        set({ article: { ...a, html: next.html, fullText: next.fullText } });
+      } catch (e) {
+        // The feed's text stays; a page that can't be had is no error to show.
+        warn("full text", e);
       }
     },
 

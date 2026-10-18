@@ -62,6 +62,8 @@ const hasArticle = (s: S) => s.article !== null;
 const openFeed = (s: S) => (s.view.kind === "feed" ? s.view.id : null);
 const openFolder = (s: S) => (s.view.kind === "folder" ? s.view.id : null);
 const hasFeeds = (s: S) => s.sidebar.feeds.length > 0;
+/** The open feed has 全文取得 on (docs/FULL_TEXT.md). */
+const fullTextOn = (s: S) => !!s.sidebar.feeds.find((f) => f.id === openFeed(s))?.fullText;
 
 /** Whether an article is selected and the list has an unread row above (-1) or below (1) it. */
 function unreadOn(s: S, side: -1 | 1): boolean {
@@ -134,6 +136,17 @@ export const COMMANDS: Command[] = [
     run: (s) => {
       const id = openFeed(s);
       if (id !== null) moveFeedDialog(id);
+    },
+  },
+  {
+    id: "feed.fullText",
+    title: "全文を取得する",
+    label: (s) => (fullTextOn(s) ? "全文の取得をやめる" : "全文を取得する"),
+    enabled: (s) => openFeed(s) !== null,
+    checked: fullTextOn,
+    run: (s) => {
+      const id = openFeed(s);
+      if (id !== null) void s.toggleFullText(id);
     },
   },
   {

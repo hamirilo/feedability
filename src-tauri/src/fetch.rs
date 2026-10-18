@@ -3,7 +3,8 @@
 //! This is the app's one reach outside besides the updater (decisions/
 //! adr-0001-fetching-feeds.md): only URLs the user subscribed to, the feeds
 //! their pages point to, the images inside their articles, and the icons of
-//! the feeds' sites.
+//! the feeds' sites, and, for feeds with 全文取得 on, their articles' pages
+//! (`get_page`, which refuses addresses on this machine and its network).
 //!
 //! - Through the proxy the OS would use for that URL, PAC included (proxy.rs).
 //!   reqwest alone only knows fixed proxies and environment variables.
@@ -23,6 +24,8 @@ pub const MAX_IMAGE_BYTES: usize = 15 * 1024 * 1024;
 pub const MAX_ICON_BYTES: usize = 256 * 1024;
 /// A site's front page, read only for its `<link rel="icon">` tags.
 pub const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
+/// An article's page, read for 全文取得 (docs/FULL_TEXT.md).
+pub const MAX_ARTICLE_PAGE_BYTES: usize = 5 * 1024 * 1024;
 
 const USER_AGENT: &str = concat!(
     "Feedability/",
@@ -63,8 +66,43 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-/// One client per proxy (a reqwest client holds its proxy and connection pool).
-static CLIENTS: Mutex<Vec<(Option<String>, reqwest::Client)>> = Mutex::new(Vec::new());
+/// Whether the URL names this machine or the local network outright:
+/// `localhost`, or an IP literal that is loopback, private (10/8, 172.16/12,
+/// 192.168/16, fc00::/7), link-local or unspecified. A name that resolves to
+/// such an address isn't caught (that would take replacing reqwest's
+/// resolver; decisions/adr-0001-fetching-feeds.md).
+pub fn is_local(url: &url::Url) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    let v4 = |ip: Ipv4Addr| {
+        ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+    };
+    let v6 = |ip: Ipv6Addr| {
+        let first = ip.segments()[0];
+        ip.is_loopback()
+            || ip.is_unspecified()
+            || (first & 0xfe00) == 0xfc00
+            || (first & 0xffc0) == 0xfe80
+            || ip.to_ipv4_mapped().is_some_and(v4)
+    };
+    match url.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => v4(ip),
+        Some(url::Host::Ipv6(ip)) => v6(ip),
+        None => true,
+    }
+}
+
+/// One client per proxy (a reqwest client holds its proxy and connection
+/// pool), and per whether redirects to local addresses are refused.
+type ClientKey = (Option<String>, bool);
+static CLIENTS: Mutex<Vec<(ClientKey, reqwest::Client)>> = Mutex::new(Vec::new());
 /// The OS's proxy answer per host, for a few minutes: running the PAC script
 /// for every request of a 200-feed refresh is slow, and a laptop that moves
 /// between the office and home gets a fresh answer soon enough.
@@ -99,11 +137,13 @@ async fn proxy_for(url: &url::Url) -> Option<String> {
     found
 }
 
-fn client(proxy: Option<String>) -> Result<reqwest::Client, String> {
+fn client(proxy: Option<String>, remote_only: bool) -> Result<reqwest::Client, String> {
+    let key = (proxy, remote_only);
     let mut clients = CLIENTS.lock().unwrap();
-    if let Some((_, c)) = clients.iter().find(|(p, _)| *p == proxy) {
+    if let Some((_, c)) = clients.iter().find(|(k, _)| *k == key) {
         return Ok(c.clone());
     }
+    let proxy = key.0.clone();
     // reqwest is built without a default TLS crypto provider (the updater's
     // choice, which this shares): ring, installed once for the process.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -111,16 +151,42 @@ fn client(proxy: Option<String>) -> Result<reqwest::Client, String> {
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::limited(8));
+        .redirect(if remote_only {
+            reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 8 {
+                    attempt.error("too many redirects")
+                } else if is_local(attempt.url()) {
+                    attempt.error(LocalAddress)
+                } else {
+                    attempt.follow()
+                }
+            })
+        } else {
+            reqwest::redirect::Policy::limited(8)
+        });
     // None: reqwest's own lookup (environment variables, fixed system
     // proxies), as the updater does; only PAC needs the OS's answer.
     if let Some(p) = &proxy {
         b = b.proxy(reqwest::Proxy::all(p).map_err(|e| e.to_string())?);
     }
     let c = b.build().map_err(|e| e.to_string())?;
-    clients.push((proxy, c.clone()));
+    clients.push((key, c.clone()));
     Ok(c)
 }
+
+/// A redirect to this machine or the local network, refused by `get_page`.
+#[derive(Debug)]
+struct LocalAddress;
+
+impl std::fmt::Display for LocalAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(LOCAL_REFUSED)
+    }
+}
+
+impl std::error::Error for LocalAddress {}
+
+const LOCAL_REFUSED: &str = "この PC や手元のネットワークのアドレスは取得しません";
 
 /// What the user reads when a request fails.
 fn describe(e: &reqwest::Error) -> String {
@@ -129,7 +195,13 @@ fn describe(e: &reqwest::Error) -> String {
     } else if e.is_connect() {
         "サーバーに接続できませんでした".into()
     } else if e.is_redirect() {
-        "転送が多すぎます".into()
+        let local = std::error::Error::source(e)
+            .is_some_and(|s| s.downcast_ref::<LocalAddress>().is_some());
+        if local {
+            LOCAL_REFUSED.into()
+        } else {
+            "転送が多すぎます".into()
+        }
     } else {
         format!("取得できませんでした（{e}）")
     }
@@ -142,11 +214,43 @@ pub async fn get(
     accept: &str,
     max: usize,
 ) -> Result<Outcome, String> {
+    request(url, etag, last_modified, accept, max, false).await
+}
+
+/// An article's page for 全文取得: HTML only, and never this machine or the
+/// local network, redirects included. The link comes from whoever runs the
+/// feed, and unlike an image, what comes back is kept and shown.
+pub async fn get_page(url: &str) -> Result<Response, String> {
+    let res = match request(url, None, None, PAGE_ACCEPT, MAX_ARTICLE_PAGE_BYTES, true).await? {
+        Outcome::Fetched(res) => res,
+        Outcome::NotModified => return Err("取得できませんでした（HTTP 304）".into()),
+    };
+    let html = res.content_type.as_deref().is_none_or(|t| {
+        let t = t.to_ascii_lowercase();
+        t.contains("text/html") || t.contains("application/xhtml")
+    });
+    if !html {
+        return Err("HTML のページではありません".into());
+    }
+    Ok(res)
+}
+
+async fn request(
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    accept: &str,
+    max: usize,
+    remote_only: bool,
+) -> Result<Outcome, String> {
     let parsed = url::Url::parse(url).map_err(|_| format!("URL として読めません：{url}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("http か https の URL ではありません：{url}"));
     }
-    let client = client(proxy_for(&parsed).await)?;
+    if remote_only && is_local(&parsed) {
+        return Err(LOCAL_REFUSED.into());
+    }
+    let client = client(proxy_for(&parsed).await, remote_only)?;
     let mut req = client.get(parsed).header(reqwest::header::ACCEPT, accept);
     if let Some(v) = etag {
         req = req.header(reqwest::header::IF_NONE_MATCH, v);
@@ -324,6 +428,44 @@ mod tests {
         );
         server.join().unwrap();
         assert!(get_blocking("ftp://example.com/feed", None, MAX_FEED_BYTES).is_err());
+    }
+
+    #[test]
+    fn tells_local_addresses() {
+        let local = |u: &str| is_local(&url::Url::parse(u).unwrap());
+        for u in [
+            "http://localhost/",
+            "http://LOCALHOST./x",
+            "http://app.localhost:3000/",
+            "http://127.0.0.1:41620/import",
+            "http://10.1.2.3/",
+            "http://172.16.0.1/",
+            "http://192.168.1.1/admin",
+            "http://169.254.169.254/latest/meta-data",
+            "http://0.0.0.0/",
+            "http://[::1]/",
+            "http://[fd00::1]/",
+            "http://[fe80::1]/",
+            "http://[::ffff:192.168.0.1]/",
+        ] {
+            assert!(local(u), "{u}");
+        }
+        for u in [
+            "https://example.com/",
+            "https://8.8.8.8/",
+            "https://172.32.0.1/",
+            "https://[2001:db8::1]/",
+            "https://localhost.example.com/",
+        ] {
+            assert!(!local(u), "{u}");
+        }
+    }
+
+    #[test]
+    fn a_page_on_this_machine_is_refused() {
+        // Nothing is asked: the server would hang on accept if it were.
+        let err = tauri::async_runtime::block_on(get_page("http://127.0.0.1:9/post")).err();
+        assert_eq!(err.as_deref(), Some(LOCAL_REFUSED));
     }
 
     #[test]

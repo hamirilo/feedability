@@ -29,6 +29,8 @@ export interface FeedRow {
   /** Why the last refresh failed; null when it worked. */
   error: string | null;
   fetchedAt: number | null;
+  /** 全文取得 is on (docs/FULL_TEXT.md). */
+  fullText: boolean;
 }
 
 export interface Sidebar {
@@ -56,6 +58,7 @@ export interface FeedInfo {
   error: string | null;
   articles: number;
   unread: number;
+  fullText: boolean;
 }
 
 export interface ArticleQuery {
@@ -98,7 +101,11 @@ export interface Article {
   read: boolean;
   starred: boolean;
   later: boolean;
+  /** Where `html` comes from: the feed, the article's page (全文取得), or the feed for now, the page to be fetched (`fetchFullText`). */
+  fullText: FullTextSource;
 }
+
+export type FullTextSource = "feed" | "page" | "pending";
 
 export type ThemeSetting = "system" | "light" | "dark";
 
@@ -167,6 +174,13 @@ export const api = {
   renameFeed: (id: number, title: string) => invoke<void>("rename_feed", { id, title }),
   moveFeed: (id: number, folderId: number | null) => invoke<void>("move_feed", { id, folderId }),
   deleteFeed: (id: number) => invoke<void>("delete_feed", { id }),
+  /** 全文取得 on or off; articles already there are fetched when opened. */
+  setFeedFullText: (id: number, on: boolean) => invoke<void>("set_feed_full_text", { id, on }),
+  /** The article's page fetched now (`fullText` "pending"); the feed's text when that fails. */
+  fetchFullText: (id: number) => invoke<Article>("fetch_full_text", { id }),
+  /** An article's page fetched in the background after a refresh. */
+  onFullText: (cb: (articleId: number) => void): Promise<UnlistenFn> =>
+    listen<number>("full-text", (e) => cb(e.payload)),
   createFolder: (name: string) => invoke<number>("create_folder", { name }),
   renameFolder: (id: number, name: string) => invoke<void>("rename_folder", { id, name }),
   deleteFolder: (id: number) => invoke<void>("delete_folder", { id }),
