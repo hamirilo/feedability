@@ -3,9 +3,11 @@
  * turns the receiver on (127.0.0.1:41630, off by default) and writes the
  * extension out, and the question an extension's request to connect brings.
  */
+import { FolderOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type ExtensionPairRequest, type ExtensionStatus } from "../lib/api";
 import { useStore } from "../store";
+import { Row, RowButton, Section, SwitchRow } from "./SettingsFrame";
 
 export function ExtensionSettings() {
   const toast = useStore((s) => s.toast);
@@ -14,7 +16,6 @@ export function ExtensionSettings() {
   useEffect(() => {
     api.extensionStatus().then(setStatus, (e) => toast(String(e), true));
   }, [toast]);
-  if (!status) return null;
 
   const act = async (f: () => Promise<ExtensionStatus | string>) => {
     setBusy(true);
@@ -35,45 +36,56 @@ export function ExtensionSettings() {
     });
 
   return (
-    <div>
-      <label className="flex items-start gap-2 pt-1.5">
-        <input
-          type="checkbox"
-          className="mt-1"
-          checked={status.enabled}
-          disabled={busy}
-          onChange={(e) => void act(() => api.setExtensionReceiver(e.target.checked))}
+    <>
+      {/* The frame's header names the page. */}
+      <p className="mb-4 text-xs text-dim">
+        Chrome（Microsoft Edge でも可）の拡張機能から、見ているページのフィードを購読したり、ページをあとで読むに入れたりできます。
+      </p>
+      <Section>
+        <SwitchRow
+          label={<span className="font-medium">ブラウザ拡張からの購読・あとで読むを受け付ける</span>}
+          checked={status?.enabled ?? false}
+          disabled={!status || busy}
+          onChange={(v) => void act(() => api.setExtensionReceiver(v))}
+          hint={
+            !status ? (
+              "確認中…"
+            ) : status.error ? (
+              <span className="text-danger">{status.error}</span>
+            ) : status.running ? (
+              `受付中（127.0.0.1:${status.port}）。このパソコンの中の、接続を許可した拡張機能からだけ受け付けます`
+            ) : (
+              "オフ。アプリの起動中だけ受け付けます"
+            )
+          }
         />
-        <span>
-          ブラウザ拡張からの購読・あとで読むを受け付ける
-          {/* The line is always there: turning it on moves nothing below. */}
-          <span className={`mt-0.5 block text-xs ${status.error ? "text-danger" : "text-dim"}`}>
-            {status.error ??
-              (status.running
-                ? `受付中（127.0.0.1:${status.port}）。このパソコンの中の、接続を許可した拡張機能からだけ受け付けます`
-                : "オフ。アプリの起動中だけ受け付けます")}
-          </span>
-        </span>
-      </label>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => void act(() => api.installExtension())}
-          disabled={busy}
-          className="rounded-md border border-line px-3 py-1 hover:bg-hover disabled:opacity-50"
+      </Section>
+      <Section title="拡張機能">
+        <Row
+          label="拡張機能のフォルダ"
+          hint={
+            status?.folder ? (
+              <>
+                Chrome の <code>chrome://extensions</code> で「デベロッパー モード」をオンにし、「パッケージ化されていない拡張機能を読み込む」でこのフォルダを選びます
+                <span className="mt-1 block break-all text-fg/80 select-text">{status.folder}</span>
+              </>
+            ) : (
+              "接続の鍵を入れた拡張機能を書き出し、フォルダを表示します"
+            )
+          }
         >
-          拡張機能のフォルダを用意して表示
-        </button>
-        <button onClick={() => void reset()} disabled={busy} className="text-xs text-dim hover:text-fg disabled:opacity-50">
-          すべての拡張機能との接続を解除
-        </button>
-      </div>
-      {status.folder && (
-        <p className="mt-1 text-xs leading-relaxed text-dim">
-          Chrome の <code>chrome://extensions</code> で「デベロッパー モード」をオンにし、「パッケージ化されていない拡張機能を読み込む」でこのフォルダを選びます：
-          <span className="block break-all select-text">{status.folder}</span>
-        </p>
-      )}
-    </div>
+          <RowButton onClick={() => void act(() => api.installExtension())} disabled={busy}>
+            <FolderOpen size={12} />
+            {status?.folder ? "もう一度用意する" : "用意して表示"}
+          </RowButton>
+        </Row>
+        <Row label="すべての拡張機能との接続を解除" hint="接続の鍵を作り直します。拡張機能は、もう一度「アプリと接続」が要ります">
+          <RowButton onClick={() => void reset()} disabled={busy}>
+            解除
+          </RowButton>
+        </Row>
+      </Section>
+    </>
   );
 }
 

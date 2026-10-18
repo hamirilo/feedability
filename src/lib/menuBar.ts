@@ -171,8 +171,10 @@ async function build(): Promise<Menu> {
   const help = submenu("ヘルプ", [
     cmd("help.shortcuts"),
     sep(),
+    cmd("help.releaseNotes"),
     cmd("help.log"),
-    ...(isMac ? [] : [sep(), cmd("app.checkUpdate"), PredefinedMenuItem.new({ item: { About: null }, text: "バージョン情報" })]),
+    // Windows has no app menu: the settings' 一般 page has the icon, name and version.
+    ...(isMac ? [] : [sep(), cmd("app.checkUpdate"), cmd("help.about")]),
   ]);
 
   return Menu.new({ items: await Promise.all([...appMenu, file, edit, feed, article, view, ...windowMenu, help]) });

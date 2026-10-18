@@ -7,7 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { openHandedOver } from "./lib/actions";
 import { api } from "./lib/api";
-import { runKey } from "./lib/commands";
+import { comboMatches, runKey } from "./lib/commands";
 import { composing } from "./lib/ime";
 import { warn } from "./lib/log";
 import { installMenuBar } from "./lib/menuBar";
@@ -105,6 +105,12 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || composing(e)) return;
+      // ⌘, closes the settings as it opened them (desktop-platform UI §9.1).
+      if (useStore.getState().dialog?.kind === "settings" && comboMatches("Mod+,", e)) {
+        e.preventDefault();
+        useStore.getState().closeDialog();
+        return;
+      }
       // A dialog or menu is open: it has the keys.
       if (useStore.getState().dialog || document.querySelector("[data-modal]")) return;
       const target = e.target as HTMLElement | null;
