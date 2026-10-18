@@ -9,7 +9,7 @@
 
 use crate::db::{self, ArticleQuery, ArticleRow, Sidebar};
 use crate::fetch::{self, Outcome};
-use crate::{feed, fulltext, markdown, opened, opml, sanitize, stockroom};
+use crate::{extension, feed, fulltext, markdown, opened, opml, sanitize, stockroom};
 use futures_util::StreamExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,16 @@ pub struct AppState {
     /// What the OS handed over to open, until the window takes it (it may
     /// not be loaded yet at launch). docs/OPEN_WITH.md.
     opened: Mutex<Vec<opened::OpenRequest>>,
+    /// The browser extension's receiver while it runs, or why it doesn't.
+    extension: Mutex<ExtensionServer>,
+    /// Pairing questions open in the window: their answer goes here.
+    extension_pairing: Mutex<std::collections::HashMap<String, std::sync::mpsc::Sender<bool>>>,
+}
+
+#[derive(Default)]
+struct ExtensionServer {
+    server: Option<extension::Server>,
+    error: Option<String>,
 }
 
 pub(crate) fn err(e: impl ToString) -> String {
@@ -175,6 +185,17 @@ struct SettingsFile {
     app: AppSettings,
     #[serde(default)]
     stockroom: StockroomSettings,
+    #[serde(default)]
+    extension: ExtensionSettings,
+}
+
+/// The browser extension's receiver (docs/EXTENSION.md); off by default.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ExtensionSettings {
+    enabled: bool,
+    /// Made when the receiver is first turned on; never sent to the window.
+    token: String,
 }
 
 /// Where articles go in stockroom, and the key to it (docs/STOCKROOM.md).
@@ -468,16 +489,27 @@ pub async fn add_feed(
     url: String,
     folder_id: Option<i64>,
 ) -> CmdResult<Added> {
-    let url = fetch::normalize_url(&url)?;
-    if with_db(&state, |c| db::feed_id_by_url(c, &url))?.is_some() {
+    subscribe(&app, &state, &url, folder_id).await
+}
+
+/// Subscribes to `url` (a feed, or a page naming one): from the add-feed
+/// dialog and from the browser extension.
+async fn subscribe(
+    app: &AppHandle,
+    state: &AppState,
+    url: &str,
+    folder_id: Option<i64>,
+) -> CmdResult<Added> {
+    let url = fetch::normalize_url(url)?;
+    if with_db(state, |c| db::feed_id_by_url(c, &url))?.is_some() {
         return Err("このフィードはすでに購読しています".into());
     }
     let (feed_url, res, parsed) = fetch_feed_or_page(&url).await?;
-    if feed_url != url && with_db(&state, |c| db::feed_id_by_url(c, &feed_url))?.is_some() {
+    if feed_url != url && with_db(state, |c| db::feed_id_by_url(c, &feed_url))?.is_some() {
         return Err("このページのフィードはすでに購読しています".into());
     }
     let title = parsed.title.clone().unwrap_or_else(|| host_of(&feed_url));
-    let feed_id = with_db(&state, |c| {
+    let feed_id = with_db(state, |c| {
         let id = db::add_feed(c, &feed_url, &title, parsed.site_url.as_deref(), folder_id)?;
         db::feed_fetched(
             c,
@@ -490,10 +522,10 @@ pub async fn add_feed(
         db::set_icon_urls(c, id, parsed.icon.as_deref(), parsed.logo.as_deref())?;
         Ok(id)
     })?;
-    let articles = with_db(&state, |c| db::store_articles(c, feed_id, &parsed.articles))?;
+    let articles = with_db(state, |c| db::store_articles(c, feed_id, &parsed.articles))?;
     log::info!("subscribed {feed_url} ({articles} articles)");
     // After subscribing, in the background: the new feed's icon.
-    spawn_icon_pass(&app);
+    spawn_icon_pass(app);
     Ok(Added {
         feed_id,
         title,
@@ -920,6 +952,254 @@ pub async fn send_to_stockroom(
         stockroom::import(stockroom::BASE, &token, &item).await,
     )?;
     Ok(Sent { duplicate })
+}
+
+// ------------------------------------------------------ browser extension
+
+/// The app as the extension's receiver sees it (extension.rs `Host`).
+struct ExtensionHost(AppHandle);
+
+/// Something came in from the browser: the window reloads and says what.
+fn tell_window(app: &AppHandle, message: String) {
+    let _ = app.emit("extension-changed", message);
+}
+
+impl extension::Host for ExtensionHost {
+    fn subscribe(&self, url: &str) -> Result<String, String> {
+        let app = &self.0;
+        let state = app.state::<AppState>();
+        let added = tauri::async_runtime::block_on(subscribe(app, &state, url, None))?;
+        tell_window(
+            app,
+            format!("「{}」を購読しました（ブラウザから）", added.title),
+        );
+        Ok(added.title)
+    }
+
+    fn save_page(&self, url: &str, title: &str, html: &str) -> Result<(), String> {
+        let app = &self.0;
+        // Nothing found (a page drawn by JavaScript): the title and the link stay.
+        let body = fulltext::extract(html, url).unwrap_or_default();
+        let page = feed::page_article(url, title, &body, db::now_ms());
+        with_db(&app.state::<AppState>(), |c| db::save_page(c, &page))?;
+        tell_window(app, format!("「{}」をあとで読むに入れました", page.title));
+        Ok(())
+    }
+
+    fn approve_pairing(&self, code: &str, extension: &str) -> bool {
+        #[derive(Clone, Serialize)]
+        struct Ask<'a> {
+            id: &'a str,
+            code: &'a str,
+            extension: &'a str,
+        }
+        let app = &self.0;
+        let state = app.state::<AppState>();
+        let id = extension::new_token()[..16].to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .extension_pairing
+            .lock()
+            .unwrap()
+            .insert(id.clone(), tx);
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        let _ = app.emit(
+            "extension-pair",
+            Ask {
+                id: &id,
+                code,
+                extension,
+            },
+        );
+        let approved = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .unwrap_or(false);
+        state.extension_pairing.lock().unwrap().remove(&id);
+        let _ = app.emit("extension-pair-end", &id);
+        approved
+    }
+}
+
+/// The user's answer to "connect this extension?".
+#[tauri::command]
+pub async fn answer_extension_pair(
+    state: State<'_, AppState>,
+    id: String,
+    allow: bool,
+) -> CmdResult<()> {
+    if let Some(tx) = state.extension_pairing.lock().unwrap().remove(&id) {
+        let _ = tx.send(allow);
+    }
+    Ok(())
+}
+
+/// Starts or stops the receiver to match the settings (a restart picks up a new token).
+fn apply_extension(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut ext = state.extension.lock().unwrap();
+    *ext = ExtensionServer::default(); // stops a running one first, freeing the port
+    let s = load_settings_file(app).extension;
+    if s.enabled && !s.token.is_empty() {
+        match extension::Server::start(
+            extension::PORT,
+            s.token,
+            std::sync::Arc::new(ExtensionHost(app.clone())),
+        ) {
+            Ok((server, _)) => ext.server = Some(server),
+            Err(e) => {
+                log::warn!("browser extension receiver: {e}");
+                ext.error = Some(e);
+            }
+        }
+    }
+}
+
+/// At launch, if it was left on.
+pub fn start_extension_receiver(app: &AppHandle) {
+    if load_settings_file(app).extension.enabled {
+        apply_extension(app);
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionStatus {
+    enabled: bool,
+    running: bool,
+    port: u16,
+    /// Why it isn't running although it's on.
+    error: Option<String>,
+    /// Where `install_extension` put the extension, if it has.
+    folder: Option<String>,
+}
+
+fn extension_folder(app: &AppHandle) -> CmdResult<PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("extension"))
+}
+
+fn extension_status_of(app: &AppHandle) -> CmdResult<ExtensionStatus> {
+    let enabled = load_settings_file(app).extension.enabled;
+    let state = app.state::<AppState>();
+    let ext = state.extension.lock().unwrap();
+    let dir = extension_folder(app)?;
+    Ok(ExtensionStatus {
+        enabled,
+        running: ext.server.is_some(),
+        port: extension::PORT,
+        error: ext.error.clone(),
+        folder: dir
+            .join("manifest.json")
+            .is_file()
+            .then(|| dir.display().to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn extension_status(app: AppHandle) -> CmdResult<ExtensionStatus> {
+    extension_status_of(&app)
+}
+
+fn update_extension_settings<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&mut ExtensionSettings) -> T,
+) -> CmdResult<T> {
+    let mut file = load_settings_file(app);
+    let out = f(&mut file.extension);
+    save_settings_file(app, &file)?;
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn set_extension_receiver(app: AppHandle, enabled: bool) -> CmdResult<ExtensionStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update_extension_settings(&app, |s| {
+            s.enabled = enabled;
+            if s.token.is_empty() {
+                s.token = extension::new_token();
+            }
+        })?;
+        apply_extension(&app);
+        extension_status_of(&app)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// A new token: every extension connected before is cut off until it
+/// connects again (the copy written out here gets the new one).
+#[tauri::command]
+pub async fn reset_extension_token(app: AppHandle) -> CmdResult<ExtensionStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let token = update_extension_settings(&app, |s| {
+            s.token = extension::new_token();
+            s.token.clone()
+        })?;
+        let dir = extension_folder(&app)?;
+        if dir.join("manifest.json").is_file() {
+            write_extension_config(&dir, &token)?;
+        }
+        apply_extension(&app);
+        extension_status_of(&app)
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Tells the written-out copy where and how to connect.
+fn write_extension_config(dir: &std::path::Path, token: &str) -> CmdResult<()> {
+    let config = serde_json::json!({ "port": extension::PORT, "token": token });
+    fs::write(
+        dir.join("config.json"),
+        serde_json::to_vec_pretty(&config).map_err(err)?,
+    )
+    .map_err(err)
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies the extension the app carries to a folder Chrome can load, with
+/// the token in its config.json, and shows the folder. Returns it.
+#[tauri::command]
+pub async fn install_extension(app: AppHandle) -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let src = app.path().resource_dir().map_err(err)?.join("extension");
+        if !src.join("manifest.json").is_file() {
+            return Err(format!(
+                "拡張機能のファイルが見つかりません: {}",
+                src.display()
+            ));
+        }
+        let token = update_extension_settings(&app, |s| {
+            if s.token.is_empty() {
+                s.token = extension::new_token();
+            }
+            s.token.clone()
+        })?;
+        let dir = extension_folder(&app)?;
+        let _ = fs::remove_dir_all(&dir);
+        copy_dir(&src, &dir).map_err(err)?;
+        write_extension_config(&dir, &token)?;
+        let _ = tauri_plugin_opener::reveal_item_in_dir(&dir);
+        Ok(dir.display().to_string())
+    })
+    .await
+    .map_err(err)?
 }
 
 // ------------------------------------------------------------ open with

@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 5;
+const VERSION: i64 = 6;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -157,6 +157,17 @@ fn migrate(conn: &Connection) -> DbResult<()> {
              COMMIT;",
         )?;
     }
+    if version < 6 {
+        // Pages saved from the browser extension (docs/EXTENSION.md) belong
+        // to one feed of their own, `saved = 1`, which is never refreshed,
+        // exported or shown in the sidebar. An older app shows it as a feed
+        // whose refresh fails, and nothing else.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE feeds ADD COLUMN saved INTEGER NOT NULL DEFAULT 0;
+             COMMIT;",
+        )?;
+    }
     if version < VERSION {
         conn.pragma_update(None, "user_version", VERSION)?;
     }
@@ -202,7 +213,7 @@ pub fn sidebar(conn: &Connection) -> DbResult<Sidebar> {
     let mut stmt = conn.prepare(
         "SELECT f.id, COALESCE(f.custom_title, f.title), f.url, f.site_url, f.folder_id, f.error, f.fetched_at,
                 (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.read = 0), f.full_text
-         FROM feeds f
+         FROM feeds f WHERE f.saved = 0
          ORDER BY COALESCE(f.custom_title, f.title) COLLATE NOCASE, f.id",
     )?;
     let feeds = stmt
@@ -329,7 +340,7 @@ pub fn add_feed(
 /// Feeds to refresh: `ids`, or all of them.
 pub fn feed_targets(conn: &Connection, ids: Option<&[i64]>) -> DbResult<Vec<FeedTarget>> {
     let mut stmt = conn.prepare(
-        "SELECT id, url, COALESCE(custom_title, title), etag, last_modified FROM feeds ORDER BY id",
+        "SELECT id, url, COALESCE(custom_title, title), etag, last_modified FROM feeds WHERE saved = 0 ORDER BY id",
     )?;
     let all = stmt
         .query_map([], |r| {
@@ -517,7 +528,7 @@ pub fn set_icon_urls(
 pub fn feeds_needing_icon(conn: &Connection, older_than_ms: i64) -> DbResult<Vec<IconTarget>> {
     let mut stmt = conn.prepare(
         "SELECT id, url, site_url, icon_url, logo_url FROM feeds
-         WHERE icon_checked_at IS NULL OR icon_checked_at < ?1 ORDER BY id",
+         WHERE saved = 0 AND (icon_checked_at IS NULL OR icon_checked_at < ?1) ORDER BY id",
     )?;
     let rows = stmt.query_map([older_than_ms], |r| {
         Ok(IconTarget {
@@ -564,6 +575,7 @@ pub fn feeds_for_export(conn: &Connection) -> DbResult<Vec<OpmlFeed>> {
     let mut stmt = conn.prepare(
         "SELECT f.url, COALESCE(f.custom_title, f.title), f.site_url, d.name
          FROM feeds f LEFT JOIN folders d ON d.id = f.folder_id
+         WHERE f.saved = 0
          ORDER BY d.name COLLATE NOCASE, COALESCE(f.custom_title, f.title) COLLATE NOCASE",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -871,6 +883,41 @@ pub fn article(conn: &Connection, id: i64) -> DbResult<Option<ArticleFull>> {
         },
     )
     .optional()
+}
+
+// ------------------------------------------------------------ saved pages
+
+/// The address of the feed that holds saved pages: not a URL anything fetches.
+const SAVED_FEED_URL: &str = "feedability:saved";
+
+/// Saves a page from the browser extension into あとで読む (docs/EXTENSION.md):
+/// read already (it isn't news), in the queue at the end, or where it was
+/// when saved again (the text is updated). Returns the article's id.
+pub fn save_page(conn: &mut Connection, page: &NewArticle) -> DbResult<i64> {
+    let feed_id = match conn
+        .query_row("SELECT id FROM feeds WHERE saved = 1", [], |r| r.get(0))
+        .optional()?
+    {
+        Some(id) => id,
+        None => {
+            conn.execute(
+                "INSERT INTO feeds (url, title, added_at, saved) VALUES (?1, '保存したページ', ?2, 1)",
+                params![SAVED_FEED_URL, now_ms()],
+            )?;
+            conn.last_insert_rowid()
+        }
+    };
+    store_articles(conn, feed_id, std::slice::from_ref(page))?;
+    let id: i64 = conn.query_row(
+        "SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2",
+        params![feed_id, page.guid],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "UPDATE articles SET read = 1, later_at = COALESCE(later_at, ?2) WHERE id = ?1",
+        params![id, now_ms()],
+    )?;
+    Ok(id)
 }
 
 // --------------------------------------------------------------- 全文取得
@@ -1720,5 +1767,45 @@ mod tests {
         conn.prepare("SELECT full_text FROM feeds").unwrap();
         conn.prepare("SELECT full_content, full_status FROM articles")
             .unwrap();
+    }
+
+    #[test]
+    fn saved_pages_go_to_later_and_stay_out_of_the_feeds() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        let page = crate::feed::page_article(
+            "https://news.example.com/a",
+            "保存した記事",
+            "<p>本文</p>",
+            1_000,
+        );
+        let id = save_page(&mut conn, &page).unwrap();
+        let a = article(&conn, id).unwrap().unwrap();
+        assert!(a.later && a.read);
+        assert_eq!(a.feed_title, "保存したページ");
+        assert_eq!(sidebar(&conn).unwrap().later, 1);
+
+        // Not a feed anywhere: the sidebar, a refresh, the icons, OPML.
+        let s = sidebar(&conn).unwrap();
+        assert_eq!(s.feeds.len(), 1);
+        assert_eq!(s.feeds[0].id, feed);
+        assert_eq!(feed_targets(&conn, None).unwrap().len(), 1);
+        assert_eq!(feeds_needing_icon(&conn, 0).unwrap().len(), 1);
+        assert_eq!(feeds_for_export(&conn).unwrap().len(), 1);
+
+        // Saved again: the same article, its place kept, the text updated.
+        set_later(&mut conn, &[id], true).unwrap();
+        let again = crate::feed::page_article(
+            "https://news.example.com/a",
+            "保存した記事",
+            "<p>新しい本文</p>",
+            2_000,
+        );
+        assert_eq!(save_page(&mut conn, &again).unwrap(), id);
+        assert_eq!(
+            article(&conn, id).unwrap().unwrap().content,
+            "<p>新しい本文</p>"
+        );
+        assert_eq!(sidebar(&conn).unwrap().later, 1);
     }
 }

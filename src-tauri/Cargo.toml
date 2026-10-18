@@ -30,6 +30,12 @@ tauri-plugin-single-instance = "2"
 # feed: links and .opml files the OS opens with the app (lib.rs, opened.rs,
 # docs/OPEN_WITH.md). Used from Rust only: no capability for the window.
 tauri-plugin-deep-link = "2"
+# The browser extension's receiver on 127.0.0.1 (loopback.rs, extension.rs,
+# decisions/adr-0005-browser-extension-receiver.md): the Recommendations'
+# default for a local HTTP server, one thread per request.
+tiny_http = "0.12"
+# The receiver's token.
+getrandom = "0.3"
 # Warnings and errors into a file in the app's log folder (lib.rs, src/lib/log.ts).
 tauri-plugin-log = "2"
 log = "0.4"

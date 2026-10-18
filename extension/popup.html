@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>Feedability に追加</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      body {
+        width: 340px;
+        padding: 14px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      header img {
+        width: 20px;
+        height: 20px;
+      }
+      #status {
+        margin-bottom: 12px;
+      }
+      #connect {
+        width: 100%;
+        margin-bottom: 12px;
+      }
+      h2 {
+        margin: 14px 0 6px;
+        font-size: 12px;
+        color: var(--dim);
+        font-weight: 600;
+      }
+      ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 6px;
+      }
+      li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      li .name {
+        flex: 1;
+        min-width: 0;
+      }
+      li .name span,
+      li .name small {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      li .name small {
+        color: var(--dim);
+        font-size: 11px;
+      }
+      #later {
+        width: 100%;
+      }
+      #result {
+        min-height: 1.5em;
+        margin-top: 10px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="icons/32.png" alt="" />
+      <strong>Feedability に追加</strong>
+    </header>
+    <div id="status" class="status">接続を確認しています…</div>
+    <button id="connect" class="btn primary" hidden>アプリと接続…</button>
+
+    <h2>このページのフィード</h2>
+    <ul id="feeds"></ul>
+    <p id="no-feeds" class="hint" hidden>
+      このページにはフィードの案内がありません。
+      <button id="try-page" class="btn">このページの URL で購読を試す</button>
+    </p>
+
+    <h2>あとで読む</h2>
+    <button id="later" class="btn">このページをあとで読むに入れる</button>
+    <p class="hint">ページの本文を Feedability に送ります（ログインが要るページも、見えているまま）。</p>
+
+    <div id="result" class="status" hidden></div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

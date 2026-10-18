@@ -60,6 +60,7 @@
       "signingIdentity": "-"
     },
     "createUpdaterArtifacts": true,
+    "resources": { "../extension/": "extension/" },
     "fileAssociations": [
       {
         "ext": ["opml"],

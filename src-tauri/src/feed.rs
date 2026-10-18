@@ -197,6 +197,28 @@ fn is_svg(u: &str) -> bool {
     url::Url::parse(u).is_ok_and(|u| u.path().to_ascii_lowercase().ends_with(".svg"))
 }
 
+/// A page saved from the browser extension (docs/EXTENSION.md) as an
+/// article: `body` is what `fulltext::extract` found in it (empty when
+/// nothing was), the page's URL is its id.
+pub fn page_article(url: &str, title: &str, body: &str, now: i64) -> NewArticle {
+    let summary = truncate(&plain_text(body), SUMMARY_CHARS);
+    let title = plain_text(title);
+    NewArticle {
+        guid: url.to_string(),
+        url: Some(url.to_string()),
+        title: if title.is_empty() {
+            url.to_string()
+        } else {
+            title
+        },
+        author: None,
+        summary,
+        content: body.to_string(),
+        published: Some(now),
+        thumb_url: thumbnail(&[], body, url),
+    }
+}
+
 fn truncate(s: &str, n: usize) -> String {
     match s.char_indices().nth(n) {
         Some((i, _)) => format!("{}…", &s[..i]),
