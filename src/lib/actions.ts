@@ -3,7 +3,7 @@
  * open / save / confirm), kept out of the command table so it stays a table.
  */
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
-import { api, type FeedInfo } from "./api";
+import { api, STOCKROOM_NOT_CONNECTED, type FeedInfo, type OpenRequest } from "./api";
 import { useStore } from "../store";
 
 const st = () => useStore.getState();
@@ -140,6 +140,10 @@ export async function importOpml() {
     filters: [{ name: "OPML", extensions: ["opml", "xml"] }],
   });
   if (typeof path !== "string") return;
+  await importOpmlFrom(path);
+}
+
+async function importOpmlFrom(path: string) {
   try {
     const r = await api.importOpml(path);
     await st().reloadSidebar();
@@ -151,6 +155,34 @@ export async function importOpml() {
     if (r.feedIds.length) await st().refresh(r.feedIds);
   } catch (e) {
     fail(e);
+  }
+}
+
+/**
+ * What the OS handed over (docs/OPEN_WITH.md). Nothing happens by itself: a
+ * `feed:` link fills the add-feed dialog, an .opml file is imported once the
+ * user agrees.
+ */
+export async function openHandedOver() {
+  let requests: OpenRequest[];
+  try {
+    requests = await api.takeOpenRequests();
+  } catch (e) {
+    return fail(e);
+  }
+  for (const r of requests) {
+    if (r.kind === "feed") {
+      st().openDialog({ kind: "addFeed", url: r.url });
+    } else {
+      const name = r.path.split(/[\\/]/).pop();
+      const ok = await ask(`「${name}」の購読を読み込みますか？\n\n購読していないフィードを追加し、更新します。`, {
+        title: "OPML を読み込む",
+        kind: "info",
+        okLabel: "読み込む",
+        cancelLabel: "キャンセル",
+      });
+      if (ok) await importOpmlFrom(r.path);
+    }
   }
 }
 
@@ -166,6 +198,43 @@ export async function exportOpml() {
     st().notify({ title: `${n} 件のフィードを書き出しました`, kind: "success" });
   } catch (e) {
     fail(e);
+  }
+}
+
+/**
+ * The open article as Markdown on the clipboard (docs/STOCKROOM.md). The
+ * Markdown is handed over as a promise inside the click or key press: WebKit
+ * only lets a page write the clipboard during one, and asking Rust first
+ * would end it.
+ */
+export async function copyMarkdown(id: number) {
+  const text = api.articleMarkdown(id).then((m) => m.markdown);
+  try {
+    if (typeof ClipboardItem !== "undefined" && ClipboardItem.supports?.("text/plain") !== false) {
+      const blob = text.then((t) => new Blob([t], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    } else {
+      await navigator.clipboard.writeText(await text);
+    }
+    st().toast("Markdown をコピーしました");
+  } catch (e) {
+    fail(e instanceof DOMException ? "クリップボードに書き込めませんでした" : e);
+  }
+}
+
+/**
+ * The article into stockroom (docs/STOCKROOM.md). Not connected yet (or no
+ * longer): stockroom's connection question first, then this again.
+ */
+export async function sendToStockroom(id: number) {
+  const toast = st().notify({ title: "stockroom に送っています…", kind: "info" });
+  try {
+    const { duplicate } = await api.sendToStockroom(id);
+    st().notify({ title: duplicate ? "stockroom にもうあります" : "stockroom に保存しました", kind: "success", replace: toast });
+  } catch (e) {
+    st().dismissToast(toast);
+    if (e === STOCKROOM_NOT_CONNECTED) st().openDialog({ kind: "stockroomPair", thenSend: id });
+    else fail(e);
   }
 }
 

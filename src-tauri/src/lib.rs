@@ -3,9 +3,12 @@ pub mod db;
 pub mod feed;
 pub mod fetch;
 pub mod fulltext;
+pub mod markdown;
+pub mod opened;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
+pub mod stockroom;
 pub mod thumb;
 
 use commands::*;
@@ -47,6 +50,34 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// `feed:` links and .opml files the OS hands over: on macOS as URLs, at
+/// launch or later; elsewhere on the command line (later launches come
+/// through single-instance).
+fn listen_for_opened(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        let classify = |urls: Vec<url::Url>| -> Vec<opened::OpenRequest> {
+            urls.iter()
+                .filter_map(|u| opened::classify(u.as_str()))
+                .collect()
+        };
+        let handle = app.clone();
+        app.deep_link()
+            .on_open_url(move |e| hand_over(&handle, classify(e.urls())));
+        // What launched the app (a feed: link, an .opml file) came before
+        // there was anyone listening: the plugin keeps it.
+        if let Ok(Some(urls)) = app.deep_link().get_current() {
+            hand_over(app, classify(urls));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        hand_over(app, opened::from_args(&args));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // The menu bar is made by the frontend from its command table
@@ -55,9 +86,17 @@ pub fn run() {
         // First, so a second launch quits before setting anything up: it only
         // brings this app's window up. Two apps on one database would refresh
         // the same feeds twice and wait on each other's writes.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app)
+        // On Windows a `feed:` link or an .opml file opened while the app
+        // runs arrives here, as the second launch's command line.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            show_main_window(app);
+            hand_over(app, opened::from_args(&args));
         }))
+        // `feed:` links and .opml files (docs/OPEN_WITH.md). The schemes are
+        // in tauri.conf.json (plugins > deep-link), the file type in
+        // bundle > fileAssociations; only Rust listens, the window gets no
+        // permission for it.
+        .plugin(tauri_plugin_deep_link::init())
         // log::* from Rust and the frontend's warnings (src/lib/log.ts), into
         // the app's log folder ("ログを表示" in the Help menu) and stdout.
         .plugin(
@@ -106,6 +145,7 @@ pub fn run() {
                 log::error!("database: {e}");
             }
             main_window(app.handle())?;
+            listen_for_opened(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -135,6 +175,14 @@ pub fn run() {
             feed_icons,
             set_feed_full_text,
             fetch_full_text,
+            article_markdown,
+            stockroom_status,
+            stockroom_pair,
+            stockroom_disconnect,
+            stockroom_choices,
+            set_stockroom_target,
+            send_to_stockroom,
+            take_open_requests,
             import_opml,
             export_opml,
             reveal_log,

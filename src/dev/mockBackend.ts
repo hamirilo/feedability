@@ -8,6 +8,7 @@ import type {
   Added,
   AppSettings,
   Article,
+  ArticleMarkdown,
   ArticleQuery,
   ArticleRow,
   FeedIcon,
@@ -15,10 +16,13 @@ import type {
   FeedRow,
   FolderRow,
   Imported,
+  OpenRequest,
   RefreshSummary,
   Sidebar,
+  StockroomChoices,
+  StockroomStatus,
 } from "../lib/api";
-import { filtersUnread } from "../lib/api";
+import { filtersUnread, STOCKROOM_NOT_CONNECTED } from "../lib/api";
 
 type MockFeed = Omit<FeedRow, "unread"> & {
   addedAt?: number;
@@ -54,6 +58,26 @@ const iconCache = new Map<number, string>();
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
+/**
+ * What the OS handed over (commands.rs `hand_over`). From the console:
+ * `__MOCK_OPEN__({ kind: "feed", url: "https://example.com/feed" })`, or
+ * `{ kind: "opml", path: "/Users/me/subs.opml" }` (the mock reads no files: it adds nothing).
+ */
+const openRequests: OpenRequest[] = [];
+(window as unknown as { __MOCK_OPEN__: (r: OpenRequest) => void }).__MOCK_OPEN__ = (r) => {
+  openRequests.push(r);
+  void emit("open-requested", null);
+};
+
+/** stockroom as commands.rs keeps it (the token stays here). Connecting takes a moment, as if the user answered in stockroom. */
+const stockroom = { token: null as string | null, folder: null as string | null, folderName: null as string | null, tags: [] as string[] };
+const sentToStockroom = new Set<number>();
+const stockroomStatus = (): StockroomStatus => ({
+  connected: stockroom.token !== null,
+  folder: stockroom.folder,
+  folderName: stockroom.folderName,
+  tags: stockroom.tags,
+});
 const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open" };
 
 const LOREM =
@@ -234,6 +258,48 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       if (!x) throw "記事が見つかりません";
       return readerArticle(x);
     }
+    case "article_markdown": {
+      const x = articles.find((y) => y.id === a.id);
+      if (!x) throw "記事が見つかりません";
+      const r = readerArticle(x);
+      const day = (ms: number) => new Date(ms + a.utcOffsetMinutes * 60_000).toISOString().slice(0, 10);
+      const body = new DOMParser().parseFromString(r.html, "text/html").body.innerText;
+      return {
+        name: `${r.title.replace(/[/\\:*?"<>|]/g, "_").slice(0, 100)}.md`,
+        markdown: `# ${r.title}\n\n- 元のページ：${r.url}\n- フィード：${r.feedTitle}\n- 公開：${day(r.published)}\n- 保存：${day(Date.now())}（Feedability から）\n\n---\n\n${body}\n`,
+      } satisfies ArticleMarkdown;
+    }
+    case "take_open_requests":
+      return openRequests.splice(0);
+    case "stockroom_status":
+      return stockroomStatus();
+    case "stockroom_pair":
+      await sleep(2500);
+      stockroom.token = "mock";
+      return stockroomStatus();
+    case "stockroom_disconnect":
+      stockroom.token = null;
+      return stockroomStatus();
+    case "stockroom_choices":
+      if (!stockroom.token) throw STOCKROOM_NOT_CONNECTED;
+      await sleep(200);
+      return {
+        folders: [
+          { id: "f1", name: "記事", parentId: null },
+          { id: "f2", name: "あとで調べる", parentId: null },
+        ],
+        tags: ["rss", "あとで", "技術"],
+      } satisfies StockroomChoices;
+    case "set_stockroom_target":
+      Object.assign(stockroom, { folder: a.folder, folderName: a.folderName, tags: a.tags.map((t: string) => t.trim()).filter(Boolean) });
+      return stockroomStatus();
+    case "send_to_stockroom": {
+      if (!stockroom.token) throw STOCKROOM_NOT_CONNECTED;
+      await sleep(400);
+      const duplicate = sentToStockroom.has(a.id);
+      sentToStockroom.add(a.id);
+      return { duplicate };
+    }
     case "set_feed_full_text": {
       const f = feeds.find((x) => x.id === a.id)!;
       f.fullText = a.on;
@@ -378,6 +444,18 @@ async function handle(cmd: string, a: any): Promise<unknown> {
     case "plugin:dialog|ask":
     case "plugin:dialog|confirm":
       return window.confirm(a.message);
+    // ask() / confirm() with their own labels: the label of the button pressed.
+    case "plugin:dialog|message": {
+      const b = a.buttons;
+      if (b && typeof b === "object" && "OkCancelCustom" in b) {
+        const [ok, cancel] = b.OkCancelCustom;
+        return window.confirm(a.message) ? ok : cancel;
+      }
+      if (b === "YesNo") return window.confirm(a.message) ? "Yes" : "No";
+      if (b === "OkCancel") return window.confirm(a.message) ? "Ok" : "Cancel";
+      window.alert(a.message);
+      return "Ok";
+    }
     case "plugin:dialog|open":
     case "plugin:dialog|save":
       return null;
