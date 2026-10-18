@@ -29,7 +29,10 @@ tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = "2"
 # feed: links and .opml files the OS opens with the app (lib.rs, opened.rs,
 # docs/OPEN_WITH.md). Used from Rust only: no capability for the window.
-tauri-plugin-deep-link = "2"
+# Pinned: 2.6.2 doesn't build on Linux with rust-ini 0.21.3 (its new
+# ParseOption fields; tauri-apps/plugins-workspace#3710, fixed upstream but not
+# released yet). Back to "2" once 2.6.3 is out. 2.6.1 has the same API.
+tauri-plugin-deep-link = "=2.6.1"
 # The browser extension's receiver on 127.0.0.1 (loopback.rs, extension.rs,
 # decisions/adr-0005-browser-extension-receiver.md): the Recommendations'
 # default for a local HTTP server, one thread per request.
