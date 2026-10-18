@@ -4,6 +4,7 @@ import { Dialogs } from "./components/Dialogs";
 import { Reader } from "./components/Reader";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
+import { openHandedOver } from "./lib/actions";
 import { api } from "./lib/api";
 import { runKey } from "./lib/commands";
 import { composing } from "./lib/ime";
@@ -28,6 +29,7 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     let unlistenIcons: (() => void) | undefined;
     let unlistenFullText: (() => void) | undefined;
+    let unlistenOpen: (() => void) | undefined;
     api
       .onRefreshProgress((p) => useStore.getState().setRefreshing(p))
       .then((u) => (unlisten = u))
@@ -42,13 +44,20 @@ export default function App() {
       .onFullText((id) => void useStore.getState().loadFullText(id))
       .then((u) => (unlistenFullText = u))
       .catch((e) => warn("full text", e));
-    void useStore.getState().init();
+    // feed: links and .opml files from the OS: those of the launch are kept
+    // in Rust until asked; later ones are told.
+    api
+      .onOpenRequested(() => void openHandedOver())
+      .then((u) => (unlistenOpen = u))
+      .catch((e) => warn("open requested", e));
+    void useStore.getState().init().then(() => openHandedOver());
     return () => {
       uninstallMenu();
       stopUpdate();
       unlisten?.();
       unlistenIcons?.();
       unlistenFullText?.();
+      unlistenOpen?.();
     };
   }, []);
 

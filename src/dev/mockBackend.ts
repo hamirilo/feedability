@@ -16,6 +16,7 @@ import type {
   FeedRow,
   FolderRow,
   Imported,
+  OpenRequest,
   RefreshSummary,
   Sidebar,
   StockroomChoices,
@@ -57,6 +58,17 @@ const iconCache = new Map<number, string>();
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
+/**
+ * What the OS handed over (commands.rs `hand_over`). From the console:
+ * `__MOCK_OPEN__({ kind: "feed", url: "https://example.com/feed" })`, or
+ * `{ kind: "opml", path: "/Users/me/subs.opml" }` (the mock reads no files: it adds nothing).
+ */
+const openRequests: OpenRequest[] = [];
+(window as unknown as { __MOCK_OPEN__: (r: OpenRequest) => void }).__MOCK_OPEN__ = (r) => {
+  openRequests.push(r);
+  void emit("open-requested", null);
+};
+
 /** stockroom as commands.rs keeps it (the token stays here). Connecting takes a moment, as if the user answered in stockroom. */
 const stockroom = { token: null as string | null, folder: null as string | null, folderName: null as string | null, tags: [] as string[] };
 const sentToStockroom = new Set<number>();
@@ -257,6 +269,8 @@ async function handle(cmd: string, a: any): Promise<unknown> {
         markdown: `# ${r.title}\n\n- 元のページ：${r.url}\n- フィード：${r.feedTitle}\n- 公開：${day(r.published)}\n- 保存：${day(Date.now())}（Feedability から）\n\n---\n\n${body}\n`,
       } satisfies ArticleMarkdown;
     }
+    case "take_open_requests":
+      return openRequests.splice(0);
     case "stockroom_status":
       return stockroomStatus();
     case "stockroom_pair":
@@ -430,6 +444,18 @@ async function handle(cmd: string, a: any): Promise<unknown> {
     case "plugin:dialog|ask":
     case "plugin:dialog|confirm":
       return window.confirm(a.message);
+    // ask() / confirm() with their own labels: the label of the button pressed.
+    case "plugin:dialog|message": {
+      const b = a.buttons;
+      if (b && typeof b === "object" && "OkCancelCustom" in b) {
+        const [ok, cancel] = b.OkCancelCustom;
+        return window.confirm(a.message) ? ok : cancel;
+      }
+      if (b === "YesNo") return window.confirm(a.message) ? "Yes" : "No";
+      if (b === "OkCancel") return window.confirm(a.message) ? "Ok" : "Cancel";
+      window.alert(a.message);
+      return "Ok";
+    }
     case "plugin:dialog|open":
     case "plugin:dialog|save":
       return null;

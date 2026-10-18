@@ -9,7 +9,7 @@
 
 use crate::db::{self, ArticleQuery, ArticleRow, Sidebar};
 use crate::fetch::{self, Outcome};
-use crate::{feed, fulltext, markdown, opml, sanitize, stockroom};
+use crate::{feed, fulltext, markdown, opened, opml, sanitize, stockroom};
 use futures_util::StreamExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,9 @@ pub struct AppState {
     /// The same for the 全文取得 pass.
     full_running: AtomicBool,
     full_again: AtomicBool,
+    /// What the OS handed over to open, until the window takes it (it may
+    /// not be loaded yet at launch). docs/OPEN_WITH.md.
+    opened: Mutex<Vec<opened::OpenRequest>>,
 }
 
 pub(crate) fn err(e: impl ToString) -> String {
@@ -917,6 +920,28 @@ pub async fn send_to_stockroom(
         stockroom::import(stockroom::BASE, &token, &item).await,
     )?;
     Ok(Sent { duplicate })
+}
+
+// ------------------------------------------------------------ open with
+
+/// Keeps what the OS handed over and tells the window (`open-requested`),
+/// which takes it with `take_open_requests`.
+pub fn hand_over(app: &AppHandle, requests: Vec<opened::OpenRequest>) {
+    if requests.is_empty() {
+        return;
+    }
+    log::info!("opened: {requests:?}");
+    app.state::<AppState>()
+        .opened
+        .lock()
+        .unwrap()
+        .extend(requests);
+    let _ = app.emit("open-requested", ());
+}
+
+#[tauri::command]
+pub async fn take_open_requests(state: State<'_, AppState>) -> CmdResult<Vec<opened::OpenRequest>> {
+    Ok(std::mem::take(&mut *state.opened.lock().unwrap()))
 }
 
 // --------------------------------------------------------------- 全文取得

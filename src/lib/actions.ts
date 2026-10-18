@@ -3,7 +3,7 @@
  * open / save / confirm), kept out of the command table so it stays a table.
  */
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
-import { api, STOCKROOM_NOT_CONNECTED, type FeedInfo } from "./api";
+import { api, STOCKROOM_NOT_CONNECTED, type FeedInfo, type OpenRequest } from "./api";
 import { useStore } from "../store";
 
 const st = () => useStore.getState();
@@ -140,6 +140,10 @@ export async function importOpml() {
     filters: [{ name: "OPML", extensions: ["opml", "xml"] }],
   });
   if (typeof path !== "string") return;
+  await importOpmlFrom(path);
+}
+
+async function importOpmlFrom(path: string) {
   try {
     const r = await api.importOpml(path);
     await st().reloadSidebar();
@@ -151,6 +155,34 @@ export async function importOpml() {
     if (r.feedIds.length) await st().refresh(r.feedIds);
   } catch (e) {
     fail(e);
+  }
+}
+
+/**
+ * What the OS handed over (docs/OPEN_WITH.md). Nothing happens by itself: a
+ * `feed:` link fills the add-feed dialog, an .opml file is imported once the
+ * user agrees.
+ */
+export async function openHandedOver() {
+  let requests: OpenRequest[];
+  try {
+    requests = await api.takeOpenRequests();
+  } catch (e) {
+    return fail(e);
+  }
+  for (const r of requests) {
+    if (r.kind === "feed") {
+      st().openDialog({ kind: "addFeed", url: r.url });
+    } else {
+      const name = r.path.split(/[\\/]/).pop();
+      const ok = await ask(`「${name}」の購読を読み込みますか？\n\n購読していないフィードを追加し、更新します。`, {
+        title: "OPML を読み込む",
+        kind: "info",
+        okLabel: "読み込む",
+        cancelLabel: "キャンセル",
+      });
+      if (ok) await importOpmlFrom(r.path);
+    }
   }
 }
 

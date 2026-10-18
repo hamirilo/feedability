@@ -22,7 +22,7 @@ export function Dialogs() {
     case "shortcuts":
       return <ShortcutHelp onClose={close} />;
     case "addFeed":
-      return <AddFeedDialog onClose={close} />;
+      return <AddFeedDialog initialUrl={dialog.url} onClose={close} />;
     case "prompt":
       return <PromptDialog d={dialog} onClose={close} />;
     case "moveFeed":
@@ -57,9 +57,9 @@ function FolderSelect({ value, onChange }: { value: number | null; onChange: (id
   );
 }
 
-function AddFeedDialog({ onClose }: { onClose: () => void }) {
+function AddFeedDialog({ initialUrl, onClose }: { initialUrl?: string; onClose: () => void }) {
   const view = useStore((s) => s.view);
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(initialUrl ?? "");
   // Into the open folder, if a folder is open.
   const [folderId, setFolderId] = useState<number | null>(view.kind === "folder" ? view.id : null);
   const { busy, error, onSubmit, onKeyDown } = useSubmit(async () => {
