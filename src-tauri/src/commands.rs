@@ -196,33 +196,55 @@ fn load_settings(app: &AppHandle) -> AppSettings {
 }
 
 fn load_settings_file(app: &AppHandle) -> SettingsFile {
-    let Ok(path) = settings_path(app) else {
-        return SettingsFile::default();
-    };
-    let Ok(bytes) = fs::read(&path) else {
+    match settings_path(app) {
+        Ok(path) => load_settings_at(&path),
+        Err(_) => SettingsFile::default(),
+    }
+}
+
+fn load_settings_at(path: &std::path::Path) -> SettingsFile {
+    let Ok(bytes) = fs::read(path) else {
         return SettingsFile::default();
     };
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         // Kept aside rather than overwritten by the next save.
         log::warn!("{}: 読み込めないため退避します: {e}", path.display());
         let _ = fs::rename(
-            &path,
+            path,
             path.with_extension(format!("json.bad-{}", db::now_ms())),
         );
         SettingsFile::default()
     })
 }
 
-/// Written to a temporary file and renamed over the old one, so a crash
-/// mid-write never leaves half a file.
-fn save_settings_file(app: &AppHandle, file: &SettingsFile) -> CmdResult<()> {
-    let path = settings_path(app)?;
+/// Changes settings.json: read, changed by `f`, written back, one change at
+/// a time. The settings dialog and stockroom's part are saved by separate
+/// commands that can run at once; each must start from the other's latest
+/// write, or the last one would bring back what the other had just changed.
+fn update_settings_file<T>(
+    app: &AppHandle,
+    f: impl FnOnce(&mut SettingsFile) -> T,
+) -> CmdResult<T> {
+    update_settings_at(&settings_path(app)?, f)
+}
+
+fn update_settings_at<T>(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut SettingsFile) -> T,
+) -> CmdResult<T> {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = load_settings_at(path);
+    let out = f(&mut file);
+    // Written to a temporary file and renamed over the old one, so a crash
+    // mid-write never leaves half a file.
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(err)?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(file).map_err(err)?).map_err(err)?;
-    fs::rename(&tmp, &path).map_err(err)
+    fs::write(&tmp, serde_json::to_vec_pretty(&file).map_err(err)?).map_err(err)?;
+    fs::rename(&tmp, path).map_err(err)?;
+    Ok(out)
 }
 
 #[tauri::command]
@@ -236,9 +258,7 @@ pub async fn set_app_settings(app: AppHandle, settings: AppSettings) -> CmdResul
     if let Some(w) = app.get_webview_window("main") {
         apply_theme(&w, settings.theme);
     }
-    let mut file = load_settings_file(&app);
-    file.app = settings.clone();
-    save_settings_file(&app, &file)?;
+    update_settings_file(&app, |file| file.app = settings.clone())?;
     Ok(settings)
 }
 
@@ -802,19 +822,19 @@ pub async fn stockroom_pair(app: AppHandle, code: String) -> CmdResult<Stockroom
     let token = stockroom::pair(stockroom::BASE, &code)
         .await
         .map_err(stockroom_message)?;
-    let mut file = load_settings_file(&app);
-    file.stockroom.token = Some(token);
-    save_settings_file(&app, &file)?;
-    Ok(stockroom_status_of(&file.stockroom))
+    update_settings_file(&app, |file| {
+        file.stockroom.token = Some(token);
+        stockroom_status_of(&file.stockroom)
+    })
 }
 
 /// Forgets the token (stockroom keeps allowing it until its token is made again there).
 #[tauri::command]
 pub async fn stockroom_disconnect(app: AppHandle) -> CmdResult<StockroomStatus> {
-    let mut file = load_settings_file(&app);
-    file.stockroom.token = None;
-    save_settings_file(&app, &file)?;
-    Ok(stockroom_status_of(&file.stockroom))
+    update_settings_file(&app, |file| {
+        file.stockroom.token = None;
+        stockroom_status_of(&file.stockroom)
+    })
 }
 
 #[derive(Serialize)]
@@ -843,18 +863,18 @@ pub async fn set_stockroom_target(
     folder_name: Option<String>,
     tags: Vec<String>,
 ) -> CmdResult<StockroomStatus> {
-    let mut file = load_settings_file(&app);
-    file.stockroom.folder = folder;
-    file.stockroom.folder_name = folder_name;
     let mut clean: Vec<String> = Vec::new();
     for t in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
         if !clean.iter().any(|c| c == t) {
             clean.push(t.to_string());
         }
     }
-    file.stockroom.tags = clean;
-    save_settings_file(&app, &file)?;
-    Ok(stockroom_status_of(&file.stockroom))
+    update_settings_file(&app, |file| {
+        file.stockroom.folder = folder;
+        file.stockroom.folder_name = folder_name;
+        file.stockroom.tags = clean;
+        stockroom_status_of(&file.stockroom)
+    })
 }
 
 /// The window tells this from any other error: it asks the user to connect.
@@ -880,9 +900,7 @@ fn forget_if_unauthorized<T>(app: &AppHandle, r: stockroom::Result<T>) -> CmdRes
     if r.as_ref()
         .is_err_and(|e| *e == stockroom::Error::Unauthorized)
     {
-        let mut file = load_settings_file(app);
-        file.stockroom.token = None;
-        save_settings_file(app, &file)?;
+        update_settings_file(app, |file| file.stockroom.token = None)?;
     }
     r.map_err(stockroom_message)
 }
@@ -1322,6 +1340,35 @@ mod tests {
         assert!(!s.auto_update);
         let s: AppSettings = serde_json::from_str(r#"{"markReadOn":"delay"}"#).unwrap();
         assert_eq!(s.mark_read_on, MarkReadOn::Delay);
+    }
+
+    #[test]
+    fn settings_written_at_once_keep_both_changes() {
+        let dir = std::env::temp_dir().join(format!("feedability-settings-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        // The settings dialog and stockroom's part, saved at the same time over and over.
+        let app = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for days in 1..=50 {
+                    update_settings_at(&path, |f| f.app.keep_days = days).unwrap();
+                }
+            })
+        };
+        let stockroom = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for n in 1..=50 {
+                    update_settings_at(&path, |f| f.stockroom.tags.push(format!("t{n}"))).unwrap();
+                }
+            })
+        };
+        app.join().unwrap();
+        stockroom.join().unwrap();
+        let f = load_settings_at(&path);
+        assert_eq!(f.app.keep_days, 50);
+        assert_eq!(f.stockroom.tags.len(), 50);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
