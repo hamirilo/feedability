@@ -977,30 +977,73 @@ pub async fn send_to_stockroom(
 /// The app as the extension's receiver sees it (extension.rs `Host`).
 struct ExtensionHost(AppHandle);
 
-/// Something came in from the browser: the window reloads and says what.
-fn tell_window(app: &AppHandle, message: String) {
-    let _ = app.emit("extension-changed", message);
+/// Something came in from the browser (the `extension-changed` event): the
+/// window says what and reloads, and when the extension asked for it
+/// (`show=1`), comes to the front at it.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FromBrowser {
+    message: String,
+    /// The feed subscribed, to show.
+    feed_id: Option<i64>,
+    /// The page put into あとで読む, to show.
+    later_id: Option<i64>,
+}
+
+fn tell_window(app: &AppHandle, news: FromBrowser) {
+    if news.feed_id.is_some() || news.later_id.is_some() {
+        crate::show_main_window(app);
+    }
+    let _ = app.emit("extension-changed", news);
 }
 
 impl extension::Host for ExtensionHost {
-    fn subscribe(&self, url: &str) -> Result<String, String> {
+    fn subscribe(&self, url: &str, options: extension::Options) -> Result<String, String> {
         let app = &self.0;
         let state = app.state::<AppState>();
         let added = tauri::async_runtime::block_on(subscribe(app, &state, url, None))?;
+        if options.full_text {
+            with_db(&state, |c| db::set_full_text(c, added.feed_id, true))?;
+        }
         tell_window(
             app,
-            format!("「{}」を購読しました（ブラウザから）", added.title),
+            FromBrowser {
+                message: format!(
+                    "「{}」を購読しました（ブラウザから{}）",
+                    added.title,
+                    if options.full_text {
+                        "・全文取得オン"
+                    } else {
+                        ""
+                    }
+                ),
+                feed_id: options.show.then_some(added.feed_id),
+                later_id: None,
+            },
         );
         Ok(added.title)
     }
 
-    fn save_page(&self, url: &str, title: &str, html: &str) -> Result<(), String> {
+    fn save_page(
+        &self,
+        url: &str,
+        title: &str,
+        html: &str,
+        options: extension::Options,
+    ) -> Result<(), String> {
         let app = &self.0;
         // Nothing found (a page drawn by JavaScript): the title and the link stay.
         let body = fulltext::extract(html, url).unwrap_or_default();
         let page = feed::page_article(url, title, &body, db::now_ms());
-        with_db(&app.state::<AppState>(), |c| db::save_page(c, &page))?;
-        tell_window(app, format!("「{}」をあとで読むに入れました", page.title));
+        let id = with_db(&app.state::<AppState>(), |c| db::save_page(c, &page))?;
+        tell_window(
+            app,
+            FromBrowser {
+                message: format!("「{}」をあとで読むに入れました", page.title),
+                feed_id: None,
+                later_id: options.show.then_some(id),
+            },
+        );
         Ok(())
     }
 
@@ -1020,11 +1063,7 @@ impl extension::Host for ExtensionHost {
             .lock()
             .unwrap()
             .insert(id.clone(), tx);
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.unminimize();
-            let _ = w.show();
-            let _ = w.set_focus();
-        }
+        crate::show_main_window(app);
         let _ = app.emit(
             "extension-pair",
             Ask {

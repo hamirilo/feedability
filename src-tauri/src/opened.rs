@@ -101,6 +101,8 @@ mod tests {
         assert_eq!(feed_link("feed:javascript:alert(1)"), None);
         assert_eq!(feed_link("feed:file:///etc/passwd"), None);
         assert_eq!(feed_link("feed:"), None);
+        // What the browser extension opens only to start the app.
+        assert_eq!(classify("feed:open"), None);
         assert_eq!(feed_link("https://example.com/rss"), None);
     }
 

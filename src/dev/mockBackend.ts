@@ -73,7 +73,8 @@ const openRequests: OpenRequest[] = [];
 /**
  * The browser extension's receiver (commands.rs). From the console:
  * `__MOCK_EXTENSION__("pair")` asks to connect, `__MOCK_EXTENSION__("later")`
- * saves a page, as the extension would.
+ * saves a page, as the extension would (with 「アプリを表示」 on, so the
+ * window goes to it).
  */
 const extension: ExtensionStatus = { enabled: false, running: false, port: 41630, error: null, folder: null };
 (window as unknown as { __MOCK_EXTENSION__: (what: "pair" | "later") => void }).__MOCK_EXTENSION__ = (what) => {
@@ -97,7 +98,7 @@ const extension: ExtensionStatus = { enabled: false, running: false, port: 41630
       fullStatus: null,
       fullHtml: null,
     });
-    void emit("extension-changed", `「保存したページ ${id}」をあとで読むに入れました`);
+    void emit("extension-changed", { message: `「保存したページ ${id}」をあとで読むに入れました`, feedId: null, laterId: id });
   }
 };
 
