@@ -27,6 +27,12 @@ tauri-plugin-process = "2"
 tauri-plugin-window-state = "2"
 # A second launch brings up the running app's window instead (lib.rs).
 tauri-plugin-single-instance = "2"
+# feed: links and .opml files the OS opens with the app (lib.rs, opened.rs,
+# docs/OPEN_WITH.md). Used from Rust only: no capability for the window.
+# Pinned: 2.6.2 doesn't build on Linux with rust-ini 0.21.3 (its new
+# ParseOption fields; tauri-apps/plugins-workspace#3710, fixed upstream but not
+# released yet). Back to "2" once 2.6.3 is out. 2.6.1 has the same API.
+tauri-plugin-deep-link = "=2.6.1"
 # Warnings and errors into a file in the app's log folder (lib.rs, src/lib/log.ts).
 tauri-plugin-log = "2"
 log = "0.4"

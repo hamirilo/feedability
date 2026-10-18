@@ -121,6 +121,9 @@ export interface StockroomChoices {
   tags: string[];
 }
 
+/** What the OS handed over to open (docs/OPEN_WITH.md): a `feed:` link's feed, or an .opml file. */
+export type OpenRequest = { kind: "feed"; url: string } | { kind: "opml"; path: string };
+
 /** The error of a stockroom command when there is no good token: ask to connect. */
 export const STOCKROOM_NOT_CONNECTED = "stockroom-not-connected";
 
@@ -237,6 +240,9 @@ export const api = {
   onIconsChanged: (cb: () => void): Promise<UnlistenFn> => listen("icons-changed", () => cb()),
 
   importOpml: (path: string) => invoke<Imported>("import_opml", { path }),
+  /** What the OS handed over since last asked (kept in Rust until the window takes it). */
+  takeOpenRequests: () => invoke<OpenRequest[]>("take_open_requests"),
+  onOpenRequested: (cb: () => void): Promise<UnlistenFn> => listen("open-requested", () => cb()),
   exportOpml: (path: string) => invoke<number>("export_opml", { path }),
 
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),

@@ -23,7 +23,7 @@ v0.1.0 のあとの機能追加の計画。優先するのは **読む体験** �
 | 3 | 一覧のレイアウト（標準・コンパクト・画像付き）（対応済み、[LIST_LAYOUT.md](LIST_LAYOUT.md)） | 読む | M | — |
 | 4 | 全文取得（要約だけのフィードの本文をページから取る）（対応済み、[FULL_TEXT.md](FULL_TEXT.md)） | 読む | L | —（決定済み：ADR-0001 を更新、`dom_smoothie`） |
 | 5 | 記事を stockroom へ送る（対応済み、[STOCKROOM.md](STOCKROOM.md)） | 連携 | S + M | — （決定済み：[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)、`htmd`、stockroom の受け口） |
-| 6 | `feed:` リンクと共有メニューから購読 | 連携 | M | capabilities の追加（deep link） |
+| 6 | `feed:` リンクと .opml ファイルから購読（対応済み、[OPEN_WITH.md](OPEN_WITH.md)。共有メニューは見送り） | 連携 | M | —（決定済み：`tauri-plugin-deep-link`。capabilities は結局足していない） |
 | 7 | ブラウザ拡張から購読・記事を送る | 連携 | L | 待ち受けポート |
 | 8 | Claude（MCP）から読む・整理する | 連携 | L | 待ち受けポート、AI に公開する操作の範囲 |
 
@@ -104,6 +104,8 @@ Feedability はフロー、stockroom はストック。取っておきたい記�
 - stockroom が動いていないときは「stockroom を起動してください」とだけ言う。Feedability は stockroom のデータを直接触らない
 
 ## フェーズ 6：`feed:` リンクと共有メニューから購読（M）
+
+対応済み。決めたことは [OPEN_WITH.md](OPEN_WITH.md)（Rust だけで受け取るので capabilities は足していない。共有メニューは見送り）。以下は計画のときのもの。
 
 - `feed:https://…` のリンクや `.opml` ファイルを開くと、Feedability の「フィードを追加」が URL 入りで開く
 - macOS は URL スキームの登録、Windows はプロトコルの登録。`tauri-plugin-deep-link` を使う（Recommendations に無いので健全性チェックをする）

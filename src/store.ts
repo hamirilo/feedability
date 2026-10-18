@@ -62,7 +62,8 @@ export interface Toast extends Required<Pick<ToastOptions, "title" | "kind" | "d
 export type Dialog =
   | { kind: "settings" }
   | { kind: "shortcuts" }
-  | { kind: "addFeed" }
+  /** `url`: filled in (a `feed:` link the OS handed over). */
+  | { kind: "addFeed"; url?: string }
   | {
       kind: "prompt";
       title: string;
