@@ -132,9 +132,16 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     if version < 4 {
         // The list's 画像付き layout (docs/LIST_LAYOUT.md): the URL of the
         // article's picture, found when it is stored; NULL: none. Articles
-        // stored before get one at the next refresh that still lists them.
-        // An older app ignores the column.
-        conn.execute_batch("ALTER TABLE articles ADD COLUMN thumb_url TEXT;")?;
+        // stored before get one at the next refresh that still lists them:
+        // the conditional-request headers are cleared so that refresh reads
+        // every feed once, where a 304 would skip storing. An older app
+        // ignores the column.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE articles ADD COLUMN thumb_url TEXT;
+             UPDATE feeds SET etag = NULL, last_modified = NULL;
+             COMMIT;",
+        )?;
     }
     if version < VERSION {
         conn.pragma_update(None, "user_version", VERSION)?;
@@ -1197,7 +1204,8 @@ mod tests {
                custom_title TEXT, site_url TEXT, folder_id INTEGER, added_at INTEGER NOT NULL,
                fetched_at INTEGER, error TEXT, etag TEXT, last_modified TEXT);
              CREATE TABLE articles (id INTEGER PRIMARY KEY);
-             INSERT INTO feeds (id, url, title, added_at) VALUES (1, 'https://a.example/feed', 'A', 0);
+             INSERT INTO feeds (id, url, title, added_at, etag, last_modified)
+               VALUES (1, 'https://a.example/feed', 'A', 0, 'v1', 'Sat, 17 Oct 2026 00:00:00 GMT');
              PRAGMA user_version = 2;",
         )
         .unwrap();
@@ -1208,6 +1216,12 @@ mod tests {
         assert_eq!(v, VERSION);
         // The existing feed has never been looked up.
         assert_eq!(feeds_needing_icon(&conn, 0).unwrap().len(), 1);
+        // Version 4: read in full once, so its articles get their pictures.
+        let t = &feed_targets(&conn, None).unwrap()[0];
+        assert_eq!(
+            (t.etag.as_deref(), t.last_modified.as_deref()),
+            (None, None)
+        );
         set_icon(
             &conn,
             1,
