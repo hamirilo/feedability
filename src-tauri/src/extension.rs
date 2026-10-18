@@ -18,6 +18,10 @@
 //! POST /subscribe?url=        a feed's or a page's URL; { title }
 //! POST /later?url=&title=     body = the page's HTML; into あとで読む
 //! ```
+//!
+//! `/subscribe` and `/later` also take the popup's switches: `show=1` brings
+//! the window to the front at what came in, `fullText=1` (subscribe only)
+//! turns 全文取得 on for the new feed.
 
 use crate::loopback::{self, Listener};
 use serde_json::{json, Value};
@@ -37,12 +41,22 @@ const REFUSED_WAIT: Duration = Duration::from_secs(30);
 /// What the server needs from the app (a trait so tests run without Tauri).
 pub trait Host: Send + Sync + 'static {
     /// Subscribes to the feed at `url`, or the one its page names: the feed's title.
-    fn subscribe(&self, url: &str) -> Result<String, String>;
+    fn subscribe(&self, url: &str, options: Options) -> Result<String, String>;
     /// Puts the page into あとで読む, its article found in `html`.
-    fn save_page(&self, url: &str, title: &str, html: &str) -> Result<(), String>;
+    fn save_page(&self, url: &str, title: &str, html: &str, options: Options)
+        -> Result<(), String>;
     /// Asks the user whether to connect the extension `extension` (its id)
     /// showing `code`. Blocks until they answer (false if they don't in time).
     fn approve_pairing(&self, code: &str, extension: &str) -> bool;
+}
+
+/// The popup's switches sent with a request.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Options {
+    /// Bring the window to the front at the feed or the page.
+    pub show: bool,
+    /// Turn 全文取得 on for the feed subscribed.
+    pub full_text: bool,
 }
 
 struct Shared {
@@ -191,6 +205,11 @@ fn handle(
     if !loopback::has_token(head.auth.as_deref(), &shared.token) {
         return error(401, NOT_CONNECTED);
     }
+    let flag = |k: &str| param(k).is_some_and(|v| v == "1");
+    let options = Options {
+        show: flag("show"),
+        full_text: flag("fullText"),
+    };
     let web_url = |k: &str| {
         param(k)
             .filter(|u| url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "http" | "https")))
@@ -205,7 +224,7 @@ fn handle(
             let Some(url) = web_url("url") else {
                 return error(400, "http か https の URL がありません");
             };
-            match host.subscribe(url) {
+            match host.subscribe(url, options) {
                 Ok(title) => (200, json!({ "title": title })),
                 Err(e) => error(422, &e),
             }
@@ -225,7 +244,7 @@ fn handle(
                 return error(413, "ページが大きすぎます");
             }
             let html = String::from_utf8_lossy(&data);
-            match host.save_page(url, param("title").unwrap_or(""), &html) {
+            match host.save_page(url, param("title").unwrap_or(""), &html, options) {
                 Ok(()) => (200, json!({})),
                 Err(e) => error(500, &e),
             }
@@ -251,25 +270,31 @@ mod tests {
 
     #[derive(Default)]
     struct TestHost {
-        subscribed: Mutex<Vec<String>>,
-        saved: Mutex<Vec<(String, String, String)>>,
+        subscribed: Mutex<Vec<(String, Options)>>,
+        saved: Mutex<Vec<(String, String, String, Options)>>,
         /// Codes the user was asked about; "0000" is refused.
         asked: Mutex<Vec<String>>,
     }
 
     impl Host for TestHost {
-        fn subscribe(&self, url: &str) -> Result<String, String> {
+        fn subscribe(&self, url: &str, options: Options) -> Result<String, String> {
             if url.contains("nofeed") {
                 return Err("フィードが見つかりませんでした".into());
             }
-            self.subscribed.lock().unwrap().push(url.into());
+            self.subscribed.lock().unwrap().push((url.into(), options));
             Ok("Example".into())
         }
-        fn save_page(&self, url: &str, title: &str, html: &str) -> Result<(), String> {
+        fn save_page(
+            &self,
+            url: &str,
+            title: &str,
+            html: &str,
+            options: Options,
+        ) -> Result<(), String> {
             self.saved
                 .lock()
                 .unwrap()
-                .push((url.into(), title.into(), html.into()));
+                .push((url.into(), title.into(), html.into(), options));
             Ok(())
         }
         fn approve_pairing(&self, code: &str, _extension: &str) -> bool {
@@ -374,9 +399,18 @@ mod tests {
             b"",
         );
         assert_eq!((status, res["title"].as_str()), (200, Some("Example")));
+        let both = Options {
+            show: true,
+            full_text: true,
+        };
+        let path = "/subscribe?url=https%3A%2F%2Fexample.com%2Fnews&show=1&fullText=1";
+        assert_eq!(call(p, "POST", path, &ext, b"").0, 200);
         assert_eq!(
             *host.subscribed.lock().unwrap(),
-            ["https://example.com/feed"]
+            [
+                ("https://example.com/feed".to_string(), Options::default()),
+                ("https://example.com/news".to_string(), both),
+            ]
         );
         assert_eq!(
             call(
@@ -396,14 +430,18 @@ mod tests {
         assert_eq!(call(p, "POST", "/subscribe", &ext, b"").0, 400);
 
         let html = "<html><body><p>本文</p></body></html>";
-        let path = "/later?url=https%3A%2F%2Fnews.example.com%2Fa&title=%E8%A8%98%E4%BA%8B";
+        let path = "/later?url=https%3A%2F%2Fnews.example.com%2Fa&title=%E8%A8%98%E4%BA%8B&show=1";
         assert_eq!(call(p, "POST", path, &ext, html.as_bytes()).0, 200);
         assert_eq!(
             *host.saved.lock().unwrap(),
             [(
                 "https://news.example.com/a".to_string(),
                 "記事".to_string(),
-                html.to_string()
+                html.to_string(),
+                Options {
+                    show: true,
+                    full_text: false
+                }
             )]
         );
         assert_eq!(

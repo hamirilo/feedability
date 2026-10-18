@@ -15,14 +15,22 @@ function show(text, kind = "", { busy = false, retry = false, close = false } = 
     s.className = "spinner";
     m.append(s);
   }
+  $("code").classList.toggle("ok", kind === "ok");
   m.append(text);
   $("retry").hidden = !retry;
   $("close").hidden = !close;
 }
 
+/** The number, one box per digit. */
+function showCode(code) {
+  $("code").replaceChildren(
+    ...[...code].map((c) => Object.assign(document.createElement("span"), { textContent: c })),
+  );
+}
+
 async function connect() {
   const code = String(crypto.getRandomValues(new Uint16Array(1))[0] % 10000).padStart(4, "0");
-  $("code").textContent = code;
+  showCode(code);
   show("アプリの確認を待っています…（Feedability の画面を見てください）", "", { busy: true });
   try {
     await pair(code);
@@ -38,7 +46,7 @@ $("close").onclick = () => window.close();
 // Already connected (e.g. opened twice): say so instead of asking again.
 try {
   await call("/info");
-  $("code").textContent = "✓";
+  showCode("✓");
   show("すでに接続されています。", "ok", { close: true });
 } catch (e) {
   if (e.status === 401) connect();

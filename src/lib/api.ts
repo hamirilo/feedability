@@ -139,6 +139,16 @@ export interface ExtensionPairRequest {
   extension: string;
 }
 
+/** Something came in from the browser extension (the "extension-changed" event). */
+export interface FromBrowser {
+  /** What to say. */
+  message: string;
+  /** The extension asked to show it: the feed subscribed… */
+  feedId: number | null;
+  /** …or the page put into あとで読む. */
+  laterId: number | null;
+}
+
 /** What the OS handed over to open (docs/OPEN_WITH.md): a `feed:` link's feed, or an .opml file. */
 export type OpenRequest = { kind: "feed"; url: string } | { kind: "opml"; path: string };
 
@@ -269,9 +279,9 @@ export const api = {
     listen<ExtensionPairRequest>("extension-pair", (e) => cb(e.payload)),
   onExtensionPairEnd: (cb: (id: string) => void): Promise<UnlistenFn> =>
     listen<string>("extension-pair-end", (e) => cb(e.payload)),
-  /** A feed subscribed or a page saved from the browser: what to say. */
-  onExtensionChanged: (cb: (message: string) => void): Promise<UnlistenFn> =>
-    listen<string>("extension-changed", (e) => cb(e.payload)),
+  /** A feed subscribed or a page saved from the browser: what to say, and what to show. */
+  onExtensionChanged: (cb: (news: FromBrowser) => void): Promise<UnlistenFn> =>
+    listen<FromBrowser>("extension-changed", (e) => cb(e.payload)),
   /** What the OS handed over since last asked (kept in Rust until the window takes it). */
   takeOpenRequests: () => invoke<OpenRequest[]>("take_open_requests"),
   onOpenRequested: (cb: () => void): Promise<UnlistenFn> => listen("open-requested", () => cb()),

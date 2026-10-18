@@ -12,7 +12,7 @@ export class AppError extends Error {
 }
 
 const NOT_RUNNING =
-  "Feedability に接続できません。アプリを起動して、設定（⌘,）の「ブラウザ拡張」で受け付けをオンにしてください";
+  "Feedability に接続できません。アプリを起動して、設定 › ブラウザ拡張 で受け付けをオンにしてください";
 export const NOT_CONNECTED =
   "この拡張機能は Feedability と接続されていません。下の「アプリと接続」を押してください";
 
@@ -73,4 +73,23 @@ export async function pair(code) {
 /** Opens the page that connects the extension to the app. */
 export function openConnectPage() {
   return chrome.tabs.create({ url: chrome.runtime.getURL("connect.html") });
+}
+
+/**
+ * The app through its `feed:` link (docs/OPEN_WITH.md), for when it doesn't
+ * answer: the OS starts it, or brings it up. The tab stays where it is; the
+ * browser only asks whether to open the app.
+ */
+function openFeedLink(link, tabId) {
+  return chrome.tabs.update(tabId, { url: link });
+}
+
+/** Starts Feedability (a `feed:` link it ignores: nothing to subscribe to). */
+export function launchApp(tabId) {
+  return openFeedLink("feed:open", tabId);
+}
+
+/** Starts Feedability with 「フィードを追加」 filled in with `url`. */
+export function openInApp(url, tabId) {
+  return openFeedLink(`feed:${url}`, tabId);
 }

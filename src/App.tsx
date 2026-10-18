@@ -68,11 +68,15 @@ export default function App() {
       api.onExtensionPairEnd((id) => {
         if (useStore.getState().extensionPair?.id === id) useStore.getState().setExtensionPair(null);
       }),
-      api.onExtensionChanged((message) => {
+      api.onExtensionChanged(async ({ message, feedId, laterId }) => {
         const s = useStore.getState();
         s.toast(message);
-        void s.reloadSidebar();
-        void s.reload();
+        await s.reloadSidebar();
+        // The extension asked to show it (Rust has brought the window up).
+        if (feedId !== null) return s.setView({ kind: "feed", id: feedId });
+        if (laterId !== null) s.setView({ kind: "later" });
+        await s.reload();
+        if (laterId !== null) void s.select(laterId);
       }),
     ]) {
       // Unmounted before it was listening: stop at once, or every message shows twice.
