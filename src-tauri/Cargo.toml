@@ -1,6 +1,6 @@
 [package]
 name = "feedability"
-version = "0.3.0"
+version = "0.4.0"
 description = "A local RSS / Atom feed reader"
 authors = ["you"]
 edition = "2021"
