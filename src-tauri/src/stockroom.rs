@@ -17,7 +17,10 @@ pub const BASE: &str = "http://127.0.0.1:41620";
 /// How stockroom's question names this app (`X-Stockroom-Client`).
 const CLIENT_NAME: &str = "Feedability";
 
-pub const NOT_RUNNING: &str = "stockroom を起動し、設定 › 連携 で受付をオンにしてください";
+/// stockroom's settings page for its receiver is ブラウザ拡張 (it was 連携
+/// before stockroom 0.28): the extension's receiver is the one apps use too.
+pub const NOT_RUNNING: &str =
+    "stockroom を起動し、設定（⌘,）›「ブラウザ拡張」で「ブラウザ拡張からの保存を受け付ける」をオンにしてください";
 const NO_LIBRARY: &str = "stockroom でライブラリを開いてください";
 const NO_FOLDER: &str = "送り先のフォルダが見つかりません。設定 › stockroom で選び直してください";
 

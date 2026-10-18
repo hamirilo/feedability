@@ -126,7 +126,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       <Row label="ブラウザ拡張" hint="Chrome / Edge から、見ているページのフィードを購読したり、ページをあとで読むに入れたりします">
         <ExtensionSettings />
       </Row>
-      <Row label="stockroom" hint="記事を stockroom に送るとき（Shift+S）の接続と送り先。stockroom の受付（設定 › 連携）がオンのときに使えます">
+      <Row label="stockroom" hint="記事を stockroom に送るとき（Shift+S）の接続と送り先。stockroom 0.28 以降で、stockroom の設定 ›「ブラウザ拡張」の受付がオンのときに使えます">
         <StockroomSettings />
       </Row>
       <Row label="アップデート">
