@@ -60,6 +60,10 @@ dom_smoothie = "0.18"
 # Full text: a page in its own encoding (Shift_JIS, EUC-JP) read as text.
 # Already in the tree through quick-xml.
 encoding_rs = "0.8"
+# Markdown of an article for stockroom (markdown.rs, docs/STOCKROOM.md): tables
+# and nested lists survive. Brings html5ever 0.38 next to ammonia's 0.40 and
+# dom_smoothie's 0.39, accepted when it was chosen.
+htmd = "0.5"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

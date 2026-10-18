@@ -9,10 +9,12 @@ import { FeedInfoDialog } from "./FeedInfoDialog";
 import { Buttons, ErrorLine, field, Modal, useSubmit } from "./Modal";
 import { SettingsDialog } from "./SettingsDialog";
 import { ShortcutHelp } from "./ShortcutHelp";
+import { StockroomPairDialog } from "./StockroomDialogs";
 
 export function Dialogs() {
   const dialog = useStore((s) => s.dialog);
   const close = useStore((s) => s.closeDialog);
+  const open = useStore((s) => s.openDialog);
   if (!dialog) return null;
   switch (dialog.kind) {
     case "settings":
@@ -27,6 +29,13 @@ export function Dialogs() {
       return <MoveFeedDialog feedId={dialog.feedId} onClose={close} />;
     case "feedInfo":
       return <FeedInfoDialog feedId={dialog.feedId} onClose={close} />;
+    case "stockroomPair":
+      return (
+        <StockroomPairDialog
+          thenSend={dialog.thenSend}
+          onClose={dialog.fromSettings ? () => open({ kind: "settings" }) : close}
+        />
+      );
   }
 }
 

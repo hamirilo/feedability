@@ -3,7 +3,7 @@
  * open / save / confirm), kept out of the command table so it stays a table.
  */
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
-import { api, type FeedInfo } from "./api";
+import { api, STOCKROOM_NOT_CONNECTED, type FeedInfo } from "./api";
 import { useStore } from "../store";
 
 const st = () => useStore.getState();
@@ -166,6 +166,43 @@ export async function exportOpml() {
     st().notify({ title: `${n} 件のフィードを書き出しました`, kind: "success" });
   } catch (e) {
     fail(e);
+  }
+}
+
+/**
+ * The open article as Markdown on the clipboard (docs/STOCKROOM.md). The
+ * Markdown is handed over as a promise inside the click or key press: WebKit
+ * only lets a page write the clipboard during one, and asking Rust first
+ * would end it.
+ */
+export async function copyMarkdown(id: number) {
+  const text = api.articleMarkdown(id).then((m) => m.markdown);
+  try {
+    if (typeof ClipboardItem !== "undefined" && ClipboardItem.supports?.("text/plain") !== false) {
+      const blob = text.then((t) => new Blob([t], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    } else {
+      await navigator.clipboard.writeText(await text);
+    }
+    st().toast("Markdown をコピーしました");
+  } catch (e) {
+    fail(e instanceof DOMException ? "クリップボードに書き込めませんでした" : e);
+  }
+}
+
+/**
+ * The article into stockroom (docs/STOCKROOM.md). Not connected yet (or no
+ * longer): stockroom's connection question first, then this again.
+ */
+export async function sendToStockroom(id: number) {
+  const toast = st().notify({ title: "stockroom に送っています…", kind: "info" });
+  try {
+    const { duplicate } = await api.sendToStockroom(id);
+    st().notify({ title: duplicate ? "stockroom にもうあります" : "stockroom に保存しました", kind: "success", replace: toast });
+  } catch (e) {
+    st().dismissToast(toast);
+    if (e === STOCKROOM_NOT_CONNECTED) st().openDialog({ kind: "stockroomPair", thenSend: id });
+    else fail(e);
   }
 }
 
