@@ -314,6 +314,7 @@ export function ArticleList() {
           commandItem("article.later"),
           commandItem("article.open"),
           commandItem("article.copyMarkdown"),
+          commandItem("article.stockroom"),
           "sep",
           commandItem("list.markAboveRead"),
           commandItem("list.markBelowRead"),

@@ -7,6 +7,7 @@ pub mod markdown;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
+pub mod stockroom;
 pub mod thumb;
 
 use commands::*;
@@ -137,6 +138,12 @@ pub fn run() {
             set_feed_full_text,
             fetch_full_text,
             article_markdown,
+            stockroom_status,
+            stockroom_pair,
+            stockroom_disconnect,
+            stockroom_choices,
+            set_stockroom_target,
+            send_to_stockroom,
             import_opml,
             export_opml,
             reveal_log,

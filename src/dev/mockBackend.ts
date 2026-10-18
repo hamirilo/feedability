@@ -18,8 +18,10 @@ import type {
   Imported,
   RefreshSummary,
   Sidebar,
+  StockroomChoices,
+  StockroomStatus,
 } from "../lib/api";
-import { filtersUnread } from "../lib/api";
+import { filtersUnread, STOCKROOM_NOT_CONNECTED } from "../lib/api";
 
 type MockFeed = Omit<FeedRow, "unread"> & {
   addedAt?: number;
@@ -55,6 +57,15 @@ const iconCache = new Map<number, string>();
 let articleSeq = 0;
 let feedSeq = feeds.length;
 let folderSeq = folders.length;
+/** stockroom as commands.rs keeps it (the token stays here). Connecting takes a moment, as if the user answered in stockroom. */
+const stockroom = { token: null as string | null, folder: null as string | null, folderName: null as string | null, tags: [] as string[] };
+const sentToStockroom = new Set<number>();
+const stockroomStatus = (): StockroomStatus => ({
+  connected: stockroom.token !== null,
+  folder: stockroom.folder,
+  folderName: stockroom.folderName,
+  tags: stockroom.tags,
+});
 const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open" };
 
 const LOREM =
@@ -245,6 +256,35 @@ async function handle(cmd: string, a: any): Promise<unknown> {
         name: `${r.title.replace(/[/\\:*?"<>|]/g, "_").slice(0, 100)}.md`,
         markdown: `# ${r.title}\n\n- 元のページ：${r.url}\n- フィード：${r.feedTitle}\n- 公開：${day(r.published)}\n- 保存：${day(Date.now())}（Feedability から）\n\n---\n\n${body}\n`,
       } satisfies ArticleMarkdown;
+    }
+    case "stockroom_status":
+      return stockroomStatus();
+    case "stockroom_pair":
+      await sleep(2500);
+      stockroom.token = "mock";
+      return stockroomStatus();
+    case "stockroom_disconnect":
+      stockroom.token = null;
+      return stockroomStatus();
+    case "stockroom_choices":
+      if (!stockroom.token) throw STOCKROOM_NOT_CONNECTED;
+      await sleep(200);
+      return {
+        folders: [
+          { id: "f1", name: "記事", parentId: null },
+          { id: "f2", name: "あとで調べる", parentId: null },
+        ],
+        tags: ["rss", "あとで", "技術"],
+      } satisfies StockroomChoices;
+    case "set_stockroom_target":
+      Object.assign(stockroom, { folder: a.folder, folderName: a.folderName, tags: a.tags.map((t: string) => t.trim()).filter(Boolean) });
+      return stockroomStatus();
+    case "send_to_stockroom": {
+      if (!stockroom.token) throw STOCKROOM_NOT_CONNECTED;
+      await sleep(400);
+      const duplicate = sentToStockroom.has(a.id);
+      sentToStockroom.add(a.id);
+      return { duplicate };
     }
     case "set_feed_full_text": {
       const f = feeds.find((x) => x.id === a.id)!;

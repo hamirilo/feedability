@@ -147,6 +147,7 @@ async function build(): Promise<Menu> {
     cmd("article.later"),
     cmd("article.open"),
     cmd("article.copyMarkdown"),
+    cmd("article.stockroom"),
     sep(),
     cmd("list.markAllRead"),
     cmd("list.markAboveRead"),

@@ -1,6 +1,6 @@
 # stockroom へ送る
 
-**状態**：計画（未実装）。ロードマップのフェーズ 5。通信の決定は [ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)（採用）。
+**状態**：対応済み（段階 1・2）。ロードマップのフェーズ 5。通信の決定は [ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)（採用）。
 受け取る側の計画は stockroom の `docs/FROM_APPS.md`。
 
 困っていること：フィードの記事は流れていくもの。Feedability は古い記事を消す（`db::purge`）し、元のページも書き換わったり消えたりする。
@@ -45,6 +45,19 @@ Feedability はフロー、stockroom はストックと役割を分け、**取�
 | 503（ライブラリが開かれていない） | stockroom でライブラリを開いてください |
 | 400（フォルダが無い） | 送り先のフォルダが見つかりません。設定 › stockroom で選び直してください |
 | そのほか | stockroom の応答をそのまま |
+
+## 実装で決めたこと
+
+- キーは **Shift+S**（S のスターの隣。今の 1 文字のキーとぶつからない）。本文の帯のボタンは「ブラウザで開く」の右（最後）
+- 接続の確認：Feedability が 4 桁の番号を作って画面に出し、`stockroom_pair(code)` が stockroom の答えを待つ（2 分まで）。送ろうとしたときに未接続なら、この確認を出し、接続できたらそのまま送る。設定の「接続する / 接続し直す」からも出せる（閉じると設定に戻る）
+- **401 は、上の表の言い方でなく、鍵を消して接続の確認を出し直す**（もう一度送ると確認が出る）。stockroom で鍵を作り直したときに、設定を開かずに済むため
+- 送る前に毎回 `GET /info` で、相手が stockroom で、ライブラリが開かれていることを確かめる（ADR-0004）
+- 送っている間は「stockroom に送っています…」のトースト。結果で書き換える
+- 鍵は `settings.json` の `stockroom.token`。画面には渡さない（`set_app_settings` は `stockroom` の部分を触らない）
+- 送り先のフォルダとタグは、設定を開いたときに `GET /folders` と `GET /tags` で読む。stockroom が閉じていても、保存したフォルダの名前は出る
+- Markdown でコピーは、クリック・キーの中で `ClipboardItem` に Promise を渡す（WebKit は操作の中でしか書かせない）。ブラウザの UI だけのモック（`npm run dev`）では、ブラウザの欄がクリップボードを許さないことがある
+- コード：`src-tauri/src/markdown.rs`（Markdown と ファイル名）、`src-tauri/src/stockroom.rs`（通信）、`commands.rs` の `article_markdown` / `stockroom_*` / `send_to_stockroom`、`src/components/StockroomDialogs.tsx`
+- stockroom 側：hamirilo/stockroom の `webimport.rs`（`Peer`。アプリは `Origin` 無しで `X-Stockroom-Client: Feedability`）
 
 ## Markdown の形
 

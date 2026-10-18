@@ -6,6 +6,7 @@ import type { MarkReadOn, ThemeSetting } from "../lib/api";
 import { checkForUpdate, appVersion } from "../lib/update";
 import { useStore } from "../store";
 import { field, Modal } from "./Modal";
+import { StockroomSettings } from "./StockroomDialogs";
 
 const THEMES: { value: ThemeSetting; label: string }[] = [
   { value: "system", label: "OS に合わせる" },
@@ -120,6 +121,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           />
           すべて既読にしたら次のフィードへ移る
         </label>
+      </Row>
+      <Row label="stockroom" hint="記事を stockroom に送るとき（Shift+S）の接続と送り先。stockroom の受付（設定 › 連携）がオンのときに使えます">
+        <StockroomSettings />
       </Row>
       <Row label="アップデート">
         <label className="flex items-center gap-2 pt-1.5">

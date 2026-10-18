@@ -3,7 +3,7 @@
  * open / save / confirm), kept out of the command table so it stays a table.
  */
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
-import { api, type FeedInfo } from "./api";
+import { api, STOCKROOM_NOT_CONNECTED, type FeedInfo } from "./api";
 import { useStore } from "../store";
 
 const st = () => useStore.getState();
@@ -187,6 +187,22 @@ export async function copyMarkdown(id: number) {
     st().toast("Markdown をコピーしました");
   } catch (e) {
     fail(e instanceof DOMException ? "クリップボードに書き込めませんでした" : e);
+  }
+}
+
+/**
+ * The article into stockroom (docs/STOCKROOM.md). Not connected yet (or no
+ * longer): stockroom's connection question first, then this again.
+ */
+export async function sendToStockroom(id: number) {
+  const toast = st().notify({ title: "stockroom に送っています…", kind: "info" });
+  try {
+    const { duplicate } = await api.sendToStockroom(id);
+    st().notify({ title: duplicate ? "stockroom にもうあります" : "stockroom に保存しました", kind: "success", replace: toast });
+  } catch (e) {
+    st().dismissToast(toast);
+    if (e === STOCKROOM_NOT_CONNECTED) st().openDialog({ kind: "stockroomPair", thenSend: id });
+    else fail(e);
   }
 }
 
