@@ -6,7 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { sendToStockroom } from "../lib/actions";
 import { api, STOCKROOM_NOT_CONNECTED, type StockroomChoices, type StockroomStatus } from "../lib/api";
 import { useStore } from "../store";
-import { field, Modal } from "./Modal";
+import { Modal } from "./Modal";
+import { Row, RowButton, Section } from "./SettingsFrame";
 
 /** Four digits, shown here and in stockroom's question, so the user can tell it is the same request. */
 const newCode = () => String(Math.floor(Math.random() * 10_000)).padStart(4, "0");
@@ -137,30 +138,34 @@ export function StockroomSettings() {
   const connect = () => openDialog({ kind: "stockroomPair", fromSettings: true });
 
   return (
-    <div>
-      <div className="flex items-center gap-3 pt-1.5">
-        <span>{status.connected ? "接続済み" : "未接続"}</span>
-        {status.connected ? (
-          <>
-            <button onClick={connect} className="rounded-md border border-line px-3 py-1 hover:bg-hover">
-              接続し直す
-            </button>
-            <button onClick={() => void disconnect()} className="text-xs text-dim hover:text-fg">
-              接続を解除
-            </button>
-          </>
-        ) : (
-          <button onClick={connect} className="rounded-md border border-line px-3 py-1 hover:bg-hover">
-            接続する
-          </button>
-        )}
-      </div>
+    <>
+      {/* The frame's header names the page. */}
+      <p className="mb-4 text-xs text-dim">
+        取っておきたい記事を、本文ごと Markdown にして stockroom に保存します（Shift+S）。stockroom 0.28 以降で、stockroom の設定 ›「ブラウザ拡張」の受付をオンにしておきます。
+      </p>
+      <Section title="接続">
+        <Row
+          label={status.connected ? "接続済み" : "未接続"}
+          hint={
+            status.connected
+              ? "接続し直すと、stockroom に確認がもう一度出ます"
+              : "記事を初めて送るときにも、接続の確認が出ます"
+          }
+        >
+          {status.connected && (
+            <RowButton onClick={() => void disconnect()}>接続を解除</RowButton>
+          )}
+          <RowButton primary={!status.connected} onClick={connect}>
+            {status.connected ? "接続し直す" : "接続する"}
+          </RowButton>
+        </Row>
+      </Section>
       {status.connected && (
-        <div className="mt-3 space-y-2">
-          <label className="block">
-            <span className="mb-1 block text-xs text-dim">送り先のフォルダ</span>
+        <Section title="送り先" sub={problem ? <span className="text-danger">{problem}</span> : undefined}>
+          <Row label="フォルダ" hint="stockroom のストックのフォルダ">
             <select
-              className={field}
+              className={select}
+              aria-label="送り先のフォルダ"
               value={status.folder ?? ""}
               disabled={!choices}
               onChange={(e) => {
@@ -177,11 +182,11 @@ export function StockroomSettings() {
                 </option>
               ))}
             </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs text-dim">付けるタグ（「,」で区切る）</span>
+          </Row>
+          <Row label="付けるタグ" hint="「,」で区切って、いくつでも">
             <input
-              className={field}
+              className={`${select} w-48`}
+              aria-label="付けるタグ"
               value={tags}
               list="stockroom-tags"
               placeholder="なし"
@@ -193,10 +198,13 @@ export function StockroomSettings() {
             <datalist id="stockroom-tags">
               {choices?.tags.map((t) => <option key={t} value={t} />)}
             </datalist>
-          </label>
-          {problem && <p className="text-xs text-danger">{problem}</p>}
-        </div>
+          </Row>
+        </Section>
       )}
-    </div>
+    </>
   );
 }
+
+/** A choice or a short text, on the right of a settings row. */
+const select =
+  "h-7 rounded-md border border-line bg-raised px-2 text-xs outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/40";

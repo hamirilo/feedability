@@ -37,7 +37,7 @@ import {
 import { api, filtersUnread } from "./api";
 import { LIST_LAYOUTS } from "./listLayout";
 import { DEFAULT_TEXT_SIZE, TEXT_SIZES } from "./reading";
-import { checkForUpdate } from "./update";
+import { checkForUpdate, openReleaseNotes } from "./update";
 import { useStore, type State } from "../store";
 
 type S = State;
@@ -84,7 +84,17 @@ function pageDown(s: S) {
 
 export const COMMANDS: Command[] = [
   // ---------------------------------------------------------------- app
-  { id: "app.settings", title: "設定…", icon: Settings, keys: ["Mod+,"], keyBy: "global", run: (s) => s.openDialog({ kind: "settings" }) },
+  {
+    id: "app.settings",
+    title: "設定…",
+    icon: Settings,
+    keys: ["Mod+,"],
+    keyBy: "global",
+    // ⌘, again closes it (desktop-platform UI §9.1: the page seen last when it opens).
+    run: (s) => (s.dialog?.kind === "settings" ? s.closeDialog() : s.openSettings()),
+  },
+  { id: "help.about", title: "Feedability について", run: (s) => s.openSettings("general") },
+  { id: "help.releaseNotes", title: "このバージョンの更新内容", run: () => openReleaseNotes() },
   { id: "app.checkUpdate", title: "アップデートを確認…", run: () => void checkForUpdate(true) },
   { id: "help.shortcuts", title: "キーボードショートカット", keys: ["?"], run: (s) => s.openDialog({ kind: "shortcuts" }) },
   { id: "help.log", title: "ログを表示", run: () => void api.revealLog().catch((e) => useStore.getState().toast(String(e), true)) },

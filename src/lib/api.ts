@@ -280,6 +280,8 @@ export const api = {
   getAppSettings: () => invoke<AppSettings>("get_app_settings"),
   setAppSettings: (settings: AppSettings) => invoke<AppSettings>("set_app_settings", { settings }),
   revealLog: () => invoke<void>("reveal_log"),
+  /** A version's release page on GitHub, in the browser (what changed). */
+  openReleasePage: (version: string) => invoke<void>("open_release_page", { version }),
 };
 
 /** Whether 未読のみ applies (not to スター付き and あとで読む; db.rs `View::filters_unread`). */

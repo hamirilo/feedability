@@ -483,6 +483,9 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       return { feedIds: [], skipped: 0 } satisfies Imported;
     case "export_opml":
       return feeds.length;
+    case "open_release_page":
+      window.open(`https://github.com/hamirilo/feedability/releases/tag/v${String(a.version).replace(/^v/, "")}`, "_blank", "noopener");
+      return null;
     case "reveal_log":
       throw "ブラウザ版ではログを表示できません";
     case "plugin:dialog|ask":

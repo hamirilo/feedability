@@ -195,6 +195,7 @@ pub fn run() {
             import_opml,
             export_opml,
             reveal_log,
+            open_release_page,
             system_proxy,
         ])
         .build(tauri::generate_context!())

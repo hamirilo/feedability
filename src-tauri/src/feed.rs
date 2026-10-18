@@ -23,13 +23,76 @@ const SUMMARY_CHARS: usize = 400;
 
 /// `url` is where the feed was fetched from: relative links resolve against it.
 pub fn parse(bytes: &[u8], url: &str) -> Result<ParsedFeed, String> {
-    let feed = feed_rs::parser::Builder::new()
-        .base_uri(Some(url))
-        .id_generator(missing_id)
-        .build()
-        .parse(bytes)
-        .map_err(|e| format!("フィードとして読めませんでした（{e}）"))?;
+    // A new parser each time: one that failed keeps half its Media RSS state.
+    let parser = || {
+        feed_rs::parser::Builder::new()
+            .base_uri(Some(url))
+            .id_generator(missing_id)
+            .build()
+    };
+    let feed = match parser().parse(bytes) {
+        Ok(feed) => feed,
+        // feed-rs 3 rejects the whole feed over one empty Media RSS
+        // `<media:description>` or `<media:title>` (TechnoEdge has one on
+        // every item). They say nothing, so drop them and try once more.
+        Err(e) => match without_empty_media_text(bytes) {
+            Some(fixed) => parser().parse(fixed.as_slice()),
+            None => Err(e),
+        }
+        .map_err(|e| format!("フィードとして読めませんでした（{e}）"))?,
+    };
     Ok(from_model(feed, url))
+}
+
+/// The feed without its empty `<media:title>` and `<media:description>`
+/// (`<x/>`, `<x></x>`, `<x><![CDATA[]]></x>`), or None when it has none.
+/// Works on the bytes: the tags are ASCII, and no byte of a Shift_JIS or
+/// EUC-JP character is `<`, `>` or `/`.
+fn without_empty_media_text(bytes: &[u8]) -> Option<Vec<u8>> {
+    fn skip_ws(b: &[u8], mut i: usize) -> usize {
+        while b.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        i
+    }
+    // Where the empty element starting at `i` (at its `<`) ends, if it is one.
+    fn empty_end(b: &[u8], i: usize, name: &[u8]) -> Option<usize> {
+        let mut j = i + 1 + name.len();
+        if !b
+            .get(j)
+            .is_some_and(|c| c.is_ascii_whitespace() || b"/>".contains(c))
+        {
+            return None;
+        }
+        j += b[j..].iter().position(|&c| c == b'>')?;
+        if b[j - 1] == b'/' {
+            return Some(j + 1);
+        }
+        j = skip_ws(b, j + 1);
+        if b[j..].starts_with(b"<![CDATA[") {
+            j = skip_ws(b, j + 9);
+            j = skip_ws(b, j + b[j..].strip_prefix(b"]]>".as_slice()).map(|_| 3)?);
+        }
+        j = skip_ws(b, j + b[j..].strip_prefix(b"</".as_slice()).map(|_| 2)?);
+        j = skip_ws(b, j + b[j..].strip_prefix(name).map(|_| name.len())?);
+        (b.get(j) == Some(&b'>')).then_some(j + 1)
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let end = [b"media:description".as_slice(), b"media:title"]
+            .iter()
+            .filter(|name| bytes[i] == b'<' && bytes[i + 1..].starts_with(name))
+            .find_map(|name| empty_end(bytes, i, name));
+        match end {
+            Some(end) => i = end,
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    (out.len() < bytes.len()).then_some(out)
 }
 
 /// An id for an entry without one, the same on every refresh: from its link
@@ -561,6 +624,29 @@ mod tests {
         assert!(!b.guid.is_empty());
         let again = parse(RSS.as_bytes(), "https://blog.example.com/feed").unwrap();
         assert_eq!(again.articles[1].guid, b.guid);
+    }
+
+    #[test]
+    fn reads_a_feed_with_empty_media_text() {
+        // As TechnoEdge's (www.techno-edge.net/rss20/index.rdf) writes it.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>T</title>
+  <item><title>A</title><link>https://blog.example.com/a</link>
+    <media:content url="https://blog.example.com/a.jpg" type="image/jpeg" medium="image">
+      <media:description type="html"><![CDATA[]]></media:description>
+      <media:title></media:title><media:title/>
+      <media:copyright>c</media:copyright>
+    </media:content>
+  </item></channel></rss>"#;
+        let f = parse(xml.as_bytes(), "https://blog.example.com/feed").unwrap();
+        assert_eq!(f.articles[0].title, "A");
+        assert_eq!(
+            f.articles[0].thumb_url.as_deref(),
+            Some("https://blog.example.com/a.jpg")
+        );
+        // A description with text is left as it is.
+        let kept = "<media:description>x</media:description><media:titles/>";
+        assert_eq!(without_empty_media_text(kept.as_bytes()), None);
     }
 
     #[test]

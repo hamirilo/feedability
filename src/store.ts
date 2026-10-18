@@ -60,8 +60,12 @@ export interface Toast extends Required<Pick<ToastOptions, "title" | "kind" | "d
   leaving?: boolean;
 }
 
+/** The settings' pages (SettingsDialog.tsx); ⌘, opens the last one seen. */
+export type SettingsPageId = "general" | "reading" | "extension" | "stockroom";
+const SETTINGS_PAGES: SettingsPageId[] = ["general", "reading", "extension", "stockroom"];
+
 export type Dialog =
-  | { kind: "settings" }
+  | { kind: "settings"; page: SettingsPageId }
   | { kind: "shortcuts" }
   /** `url`: filled in (a `feed:` link the OS handed over). */
   | { kind: "addFeed"; url?: string }
@@ -103,6 +107,8 @@ interface Prefs {
   textSize: number;
   lineHeight: number;
   textWidth: number;
+  /** The settings' page seen last (desktop-platform UI §9.1). */
+  settingsPage: SettingsPageId;
 }
 function loadPrefs(): Prefs {
   const fallback: Prefs = {
@@ -115,6 +121,7 @@ function loadPrefs(): Prefs {
     textSize: DEFAULT_TEXT_SIZE,
     lineHeight: DEFAULT_LINE_HEIGHT,
     textWidth: DEFAULT_TEXT_WIDTH,
+    settingsPage: "general",
   };
   try {
     const p = { ...fallback, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") };
@@ -126,6 +133,7 @@ function loadPrefs(): Prefs {
       textSize: validStep(p.textSize, TEXT_SIZES.length, fallback.textSize),
       lineHeight: validStep(p.lineHeight, LINE_HEIGHTS.length, fallback.lineHeight),
       textWidth: validStep(p.textWidth, TEXT_WIDTHS.length, fallback.textWidth),
+      settingsPage: SETTINGS_PAGES.includes(p.settingsPage) ? p.settingsPage : fallback.settingsPage,
     };
   } catch {
     return fallback;
@@ -224,6 +232,10 @@ export interface State {
   setSettings: (s: AppSettings) => Promise<void>;
   setRefreshing: (p: RefreshProgress | null) => void;
   setUpdating: (u: Updating | null) => void;
+  /** The settings page seen last. */
+  settingsPage: SettingsPageId;
+  /** ⌘, and the menu: the page seen last; a page: that one (and remembered). */
+  openSettings: (page?: SettingsPageId) => void;
   openDialog: (d: Dialog) => void;
   closeDialog: () => void;
   setExtensionPair: (r: ExtensionPairRequest | null) => void;
@@ -272,6 +284,7 @@ export const useStore = create<State>((set, get) => {
       textSize: get().textSize,
       lineHeight: get().lineHeight,
       textWidth: get().textWidth,
+      settingsPage: get().settingsPage,
     });
   /** Asks the list again; whether the answer was used (false: a newer query overtook it, or it failed). */
   const load = async (): Promise<boolean> => {
@@ -354,6 +367,7 @@ export const useStore = create<State>((set, get) => {
     textSize: prefs.textSize,
     lineHeight: prefs.lineHeight,
     textWidth: prefs.textWidth,
+    settingsPage: prefs.settingsPage,
     search: "",
     articles: [],
     loaded: false,
@@ -717,6 +731,11 @@ export const useStore = create<State>((set, get) => {
       if (get().refreshing) set({ refreshing });
     },
     setUpdating: (updating) => set({ updating }),
+    openSettings: (page) => {
+      const p = page ?? get().settingsPage;
+      set({ dialog: { kind: "settings", page: p }, settingsPage: p });
+      savePrefsNow();
+    },
     openDialog: (dialog) => set({ dialog }),
     closeDialog: () => set({ dialog: null }),
     setExtensionPair: (extensionPair) => set({ extensionPair }),

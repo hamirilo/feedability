@@ -14,11 +14,11 @@ import { StockroomPairDialog } from "./StockroomDialogs";
 export function Dialogs() {
   const dialog = useStore((s) => s.dialog);
   const close = useStore((s) => s.closeDialog);
-  const open = useStore((s) => s.openDialog);
+  const openSettings = useStore((s) => s.openSettings);
   if (!dialog) return null;
   switch (dialog.kind) {
     case "settings":
-      return <SettingsDialog onClose={close} />;
+      return <SettingsDialog page={dialog.page} onClose={close} />;
     case "shortcuts":
       return <ShortcutHelp onClose={close} />;
     case "addFeed":
@@ -33,7 +33,7 @@ export function Dialogs() {
       return (
         <StockroomPairDialog
           thenSend={dialog.thenSend}
-          onClose={dialog.fromSettings ? () => open({ kind: "settings" }) : close}
+          onClose={dialog.fromSettings ? () => openSettings("stockroom") : close}
         />
       );
   }

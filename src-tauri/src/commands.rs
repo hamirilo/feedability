@@ -1584,6 +1584,30 @@ pub async fn export_opml(state: State<'_, AppState>, path: PathBuf) -> CmdResult
 // ------------------------------------------------------------------- app
 
 /// Help › ログを表示: the log file in Finder / Explorer.
+/// This version's release page on GitHub, in the browser: the update dialog
+/// and the settings' アップデート section link there for what changed,
+/// instead of showing the notes in the app.
+#[tauri::command]
+pub async fn open_release_page(version: String) -> CmdResult<()> {
+    tauri_plugin_opener::open_url(release_page(&version)?, None::<&str>).map_err(err)
+}
+
+/// Same repository as `plugins.updater.endpoints` in tauri.conf.json. Only a
+/// version goes into the URL, so the page can't be sent anywhere else.
+fn release_page(version: &str) -> CmdResult<String> {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let ok = !version.is_empty()
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    if !ok {
+        return Err(format!("not a version: {version}"));
+    }
+    Ok(format!(
+        "https://github.com/hamirilo/feedability/releases/tag/v{version}"
+    ))
+}
+
 #[tauri::command]
 pub async fn reveal_log(app: AppHandle) -> CmdResult<()> {
     let dir = app.path().app_log_dir().map_err(err)?;
@@ -1646,6 +1670,21 @@ mod tests {
         assert_eq!(f.app.keep_days, 50);
         assert_eq!(f.stockroom.tags.len(), 50);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn release_pages_are_only_versions() {
+        assert_eq!(
+            release_page("0.5.0").unwrap(),
+            "https://github.com/hamirilo/feedability/releases/tag/v0.5.0"
+        );
+        assert_eq!(
+            release_page("v0.5.0").unwrap(),
+            "https://github.com/hamirilo/feedability/releases/tag/v0.5.0"
+        );
+        assert!(release_page("").is_err());
+        assert!(release_page("0.5.0/../../evil").is_err());
+        assert!(release_page("0.5.0?x=1").is_err());
     }
 
     #[test]
