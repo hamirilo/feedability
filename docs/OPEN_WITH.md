@@ -14,6 +14,7 @@
 | .opml を開いたとき | 「『<ファイル名>』の購読を読み込みますか？」と聞き、「読み込む」なら メニューの OPML を読み込む と同じ処理（購読していないフィードを足して更新） |
 | 受け取る場所 | Rust だけ（`opened.rs`、`commands::hand_over`）。窓には `open-requested` のイベントで知らせ、窓が `take_open_requests` で受け取る。起動のときに窓がまだ読み込まれていなくても失わない |
 | capabilities | **足していない**。deep-link の JS の API を使わず、Rust で受け取るので、窓に権限は要らない |
+| プラグインの版 | `=2.6.1` に固定。2.6.2 は Linux で rust-ini 0.21.3 と組み合わせるとビルドできない（tauri-apps/plugins-workspace#3710。直ったが未リリース）。CI の Linux のテストで落ちた。2.6.3 が出たら `"2"` に戻す |
 | 二重起動 | single-instance のまま。Windows で起動中に開くと、2 回目の起動の引数が今の窓に渡る |
 
 ## OS ごとの動き
