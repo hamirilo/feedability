@@ -9,7 +9,7 @@
 
 use crate::db::{self, ArticleQuery, ArticleRow, Sidebar};
 use crate::fetch::{self, Outcome};
-use crate::{feed, fulltext, opml, sanitize};
+use crate::{feed, fulltext, markdown, opml, sanitize};
 use futures_util::StreamExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -256,14 +256,16 @@ pub async fn get_article(state: State<'_, AppState>, id: i64) -> CmdResult<Artic
     Ok(reader_article(a))
 }
 
-fn reader_article(a: db::ArticleFull) -> Article {
+/// The article's text as the reader shows it, sanitized: the page's (全文取得)
+/// when there is one, else the feed's content, else its summary.
+fn shown_html(a: &db::ArticleFull) -> (String, FullText) {
     let page = a
         .full_content
         .as_deref()
         .filter(|_| a.full_text && a.full_status == Some(db::FullStatus::Fetched));
     let full_text = if page.is_some() {
         FullText::Page
-    } else if page_pending(&a) {
+    } else if page_pending(a) {
         FullText::Pending
     } else {
         FullText::Feed
@@ -274,8 +276,13 @@ fn reader_article(a: db::ArticleFull) -> Article {
         None if a.content.trim().is_empty() => &a.summary,
         None => &a.content,
     };
+    (sanitize::article_html(source, base), full_text)
+}
+
+fn reader_article(a: db::ArticleFull) -> Article {
+    let (html, full_text) = shown_html(&a);
     Article {
-        html: sanitize::article_html(source, base),
+        html,
         full_text,
         id: a.id,
         feed_id: a.feed_id,
@@ -289,6 +296,41 @@ fn reader_article(a: db::ArticleFull) -> Article {
         starred: a.starred,
         later: a.later,
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticleMarkdown {
+    /// `<title>.md`, safe as a file name.
+    name: String,
+    markdown: String,
+}
+
+/// The article as one Markdown file (docs/STOCKROOM.md): what the reader
+/// shows, with a header of where it came from. `utc_offset_minutes` (east
+/// positive) dates it in the user's time zone.
+#[tauri::command]
+pub async fn article_markdown(
+    state: State<'_, AppState>,
+    id: i64,
+    utc_offset_minutes: i32,
+) -> CmdResult<ArticleMarkdown> {
+    let a = with_db(&state, |c| db::article(c, id))?.ok_or("記事が見つかりません")?;
+    Ok(to_markdown(&a, utc_offset_minutes))
+}
+
+fn to_markdown(a: &db::ArticleFull, utc_offset_minutes: i32) -> ArticleMarkdown {
+    let (html, _) = shown_html(a);
+    let meta = markdown::Meta {
+        title: &a.title,
+        url: a.url.as_deref(),
+        feed_title: &a.feed_title,
+        published: a.published,
+        saved: db::now_ms(),
+        utc_offset_minutes,
+    };
+    let (name, markdown) = markdown::article(&meta, &html);
+    ArticleMarkdown { name, markdown }
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@ pub mod db;
 pub mod feed;
 pub mod fetch;
 pub mod fulltext;
+pub mod markdown;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
@@ -135,6 +136,7 @@ pub fn run() {
             feed_icons,
             set_feed_full_text,
             fetch_full_text,
+            article_markdown,
             import_opml,
             export_opml,
             reveal_log,

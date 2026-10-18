@@ -169,6 +169,27 @@ export async function exportOpml() {
   }
 }
 
+/**
+ * The open article as Markdown on the clipboard (docs/STOCKROOM.md). The
+ * Markdown is handed over as a promise inside the click or key press: WebKit
+ * only lets a page write the clipboard during one, and asking Rust first
+ * would end it.
+ */
+export async function copyMarkdown(id: number) {
+  const text = api.articleMarkdown(id).then((m) => m.markdown);
+  try {
+    if (typeof ClipboardItem !== "undefined" && ClipboardItem.supports?.("text/plain") !== false) {
+      const blob = text.then((t) => new Blob([t], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+    } else {
+      await navigator.clipboard.writeText(await text);
+    }
+    st().toast("Markdown をコピーしました");
+  } catch (e) {
+    fail(e instanceof DOMException ? "クリップボードに書き込めませんでした" : e);
+  }
+}
+
 export async function openInBrowser(url: string) {
   try {
     await api.openUrl(url);

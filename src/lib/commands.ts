@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import {
   addFeedDialog,
+  copyMarkdown,
   deleteFeed,
   deleteFolder,
   exportOpml,
@@ -314,6 +315,12 @@ export const COMMANDS: Command[] = [
     keys: ["Space"],
     enabled: hasArticle,
     run: (s) => pageDown(s),
+  },
+  {
+    id: "article.copyMarkdown",
+    title: "Markdown でコピー",
+    enabled: hasArticle,
+    run: (s) => s.article && void copyMarkdown(s.article.id),
   },
   {
     id: "article.open",

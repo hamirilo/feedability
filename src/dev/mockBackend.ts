@@ -8,6 +8,7 @@ import type {
   Added,
   AppSettings,
   Article,
+  ArticleMarkdown,
   ArticleQuery,
   ArticleRow,
   FeedIcon,
@@ -233,6 +234,17 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       const x = articles.find((y) => y.id === a.id);
       if (!x) throw "記事が見つかりません";
       return readerArticle(x);
+    }
+    case "article_markdown": {
+      const x = articles.find((y) => y.id === a.id);
+      if (!x) throw "記事が見つかりません";
+      const r = readerArticle(x);
+      const day = (ms: number) => new Date(ms + a.utcOffsetMinutes * 60_000).toISOString().slice(0, 10);
+      const body = new DOMParser().parseFromString(r.html, "text/html").body.innerText;
+      return {
+        name: `${r.title.replace(/[/\\:*?"<>|]/g, "_").slice(0, 100)}.md`,
+        markdown: `# ${r.title}\n\n- 元のページ：${r.url}\n- フィード：${r.feedTitle}\n- 公開：${day(r.published)}\n- 保存：${day(Date.now())}（Feedability から）\n\n---\n\n${body}\n`,
+      } satisfies ArticleMarkdown;
     }
     case "set_feed_full_text": {
       const f = feeds.find((x) => x.id === a.id)!;

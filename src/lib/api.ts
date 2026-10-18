@@ -107,6 +107,13 @@ export interface Article {
 
 export type FullTextSource = "feed" | "page" | "pending";
 
+/** An article as one Markdown file (docs/STOCKROOM.md). */
+export interface ArticleMarkdown {
+  /** `<title>.md`, safe as a file name. */
+  name: string;
+  markdown: string;
+}
+
 export type ThemeSetting = "system" | "light" | "dark";
 
 export type MarkReadOn = "open" | "delay" | "manual";
@@ -178,6 +185,9 @@ export const api = {
   setFeedFullText: (id: number, on: boolean) => invoke<void>("set_feed_full_text", { id, on }),
   /** The article's page fetched now (`fullText` "pending"); the feed's text when that fails. */
   fetchFullText: (id: number) => invoke<Article>("fetch_full_text", { id }),
+  /** The article as Markdown, dated in this machine's time zone. */
+  articleMarkdown: (id: number) =>
+    invoke<ArticleMarkdown>("article_markdown", { id, utcOffsetMinutes: -new Date().getTimezoneOffset() }),
   /** An article's page fetched in the background after a refresh. */
   onFullText: (cb: (articleId: number) => void): Promise<UnlistenFn> =>
     listen<number>("full-text", (e) => cb(e.payload)),
