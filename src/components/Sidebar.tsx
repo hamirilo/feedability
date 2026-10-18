@@ -147,6 +147,7 @@ export function Sidebar() {
         "sep",
         commandItem("feed.rename"),
         commandItem("feed.move"),
+        commandItem("feed.fullText"),
         "sep",
         commandItem("feed.delete", true),
       ],

@@ -2,6 +2,7 @@ pub mod commands;
 pub mod db;
 pub mod feed;
 pub mod fetch;
+pub mod fulltext;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
@@ -132,6 +133,8 @@ pub fn run() {
             refresh_feeds,
             cancel_refresh,
             feed_icons,
+            set_feed_full_text,
+            fetch_full_text,
             import_opml,
             export_opml,
             reveal_log,

@@ -291,6 +291,9 @@ export function Reader() {
             <div className="mt-2 text-xs text-dim">
               {[article.author, fullDate(article.published)].filter(Boolean).join(" · ")}
             </div>
+            {/* 全文取得 (docs/FULL_TEXT.md): where the text comes from, under the date. Nothing moves when it arrives but the text. */}
+            {article.fullText === "pending" && <div className="mt-1 text-xs text-dim">記事のページから本文を取得しています…</div>}
+            {article.fullText === "page" && <div className="mt-1 text-xs text-dim">記事のページから取得した本文</div>}
             <div className="mt-6">
               <Body html={article.html} />
             </div>

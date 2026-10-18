@@ -7,12 +7,13 @@ desktop-platform の Architecture Standard の層（shell / core / features）�
 | 層 | 中身 |
 |---|---|
 | shell | `proxy.rs`、updater（`src/lib/update.ts`）、log の配線（`lib.rs`、`src/lib/log.ts`）、single-instance、window-state、`settings.json`、タイトルバー（`src/lib/titleBar.ts`）。stockroom から写したもので、desktop-base ができたら差し替える |
-| core | それ以外。データ（`db.rs`）、取得（`fetch.rs`）、解析（`feed.rs`、`opml.rs`）、本文の安全化（`sanitize.rs`）、画面 |
+| core | それ以外。データ（`db.rs`）、取得（`fetch.rs`）、解析（`feed.rs`、`opml.rs`）、全文取得の抜き出し（`fulltext.rs`）、本文の安全化（`sanitize.rs`）、画面 |
 
 ## データの流れ
 
 ```text
 fetch.rs ──bytes──▶ feed.rs ──NewArticle──▶ db.rs（articles）
+fetch::get_page ──▶ fulltext.rs ──full_content──▶ │（全文取得をオンにしたフィードだけ）
                                                │
                          get_article ◀─────────┘
                               │ sanitize.rs（ammonia、相対リンクを記事の URL で解決）
