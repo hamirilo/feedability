@@ -107,6 +107,32 @@ export interface Article {
 
 export type FullTextSource = "feed" | "page" | "pending";
 
+/** The connection to stockroom as the settings show it (docs/STOCKROOM.md); the token stays in Rust. */
+export interface StockroomStatus {
+  connected: boolean;
+  /** stockroom's folder id; null: 未分類. */
+  folder: string | null;
+  folderName: string | null;
+  tags: string[];
+}
+
+export interface StockroomChoices {
+  folders: { id: string; name: string; parentId: string | null }[];
+  tags: string[];
+}
+
+/** The error of a stockroom command when there is no good token: ask to connect. */
+export const STOCKROOM_NOT_CONNECTED = "stockroom-not-connected";
+
+const utcOffsetMinutes = () => -new Date().getTimezoneOffset();
+
+/** An article as one Markdown file (docs/STOCKROOM.md). */
+export interface ArticleMarkdown {
+  /** `<title>.md`, safe as a file name. */
+  name: string;
+  markdown: string;
+}
+
 export type ThemeSetting = "system" | "light" | "dark";
 
 export type MarkReadOn = "open" | "delay" | "manual";
@@ -178,6 +204,21 @@ export const api = {
   setFeedFullText: (id: number, on: boolean) => invoke<void>("set_feed_full_text", { id, on }),
   /** The article's page fetched now (`fullText` "pending"); the feed's text when that fails. */
   fetchFullText: (id: number) => invoke<Article>("fetch_full_text", { id }),
+  /** The article as Markdown, dated in this machine's time zone. */
+  articleMarkdown: (id: number) =>
+    invoke<ArticleMarkdown>("article_markdown", { id, utcOffsetMinutes: utcOffsetMinutes() }),
+  /** Asks stockroom nothing. */
+  stockroomStatus: () => invoke<StockroomStatus>("stockroom_status"),
+  /** Waits while the user answers stockroom's question showing `code` (up to 2 minutes). */
+  stockroomPair: (code: string) => invoke<StockroomStatus>("stockroom_pair", { code }),
+  stockroomDisconnect: () => invoke<StockroomStatus>("stockroom_disconnect"),
+  /** stockroom's folders and tags, asked now. */
+  stockroomChoices: () => invoke<StockroomChoices>("stockroom_choices"),
+  setStockroomTarget: (folder: string | null, folderName: string | null, tags: string[]) =>
+    invoke<StockroomStatus>("set_stockroom_target", { folder, folderName, tags }),
+  /** `duplicate`: stockroom already had it. */
+  sendToStockroom: (id: number) =>
+    invoke<{ duplicate: boolean }>("send_to_stockroom", { id, utcOffsetMinutes: utcOffsetMinutes() }),
   /** An article's page fetched in the background after a refresh. */
   onFullText: (cb: (articleId: number) => void): Promise<UnlistenFn> =>
     listen<number>("full-text", (e) => cb(e.payload)),

@@ -25,6 +25,7 @@ fetch::get_page ──▶ fulltext.rs ──full_content──▶ │（全文�
 ```
 
 - **外への通信は `fetch.rs` だけ**。WebView は外へ出ない（CSP の `connect-src` と `img-src` に外の出どころが無い）。理由は [ADR-0001](../decisions/adr-0001-fetching-feeds.md)
+- **127.0.0.1 の stockroom へは `stockroom.rs` だけ**。送り先は `127.0.0.1:41620` に固定、プロキシを通さない、ユーザーが送ると選んだときだけ。理由は [ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)
 - **本文の HTML は 2 重に守る**：Rust の ammonia でスクリプト・イベント属性・スタイル・フォーム・iframe を落とし、CSP の `script-src 'self'` でもインラインのスクリプトを止める
 - 記事の `content` には **フィードの HTML をそのまま** 保存し、表示するたびに安全化する。安全化の規則を変えたとき、古い記事にも新しい規則が効く
 - リンクは `open_url` で OS のブラウザへ。WebView の中では遷移しない（中クリックと ⌘ クリックも止める）

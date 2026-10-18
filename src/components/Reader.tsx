@@ -7,7 +7,7 @@
  *
  * Links open in the OS's browser; the app's window never navigates.
  */
-import { CircleDot, Clock, ExternalLink, Minus, Plus, Star, Type } from "lucide-react";
+import { Archive, CircleDot, Clock, ExternalLink, Minus, Plus, Star, Type } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { openInBrowser } from "../lib/actions";
 import { api } from "../lib/api";
@@ -252,6 +252,8 @@ export function Reader() {
           active={article?.later ? "text-accent" : undefined}
         />
         <ToolButton id="article.open" icon={<ExternalLink size={16} />} label="ブラウザで開く" />
+        {/* Last, after the ones that were there: they keep their places (UI Standard §10). */}
+        <ToolButton id="article.stockroom" icon={<Archive size={16} />} label="stockroom に送る" />
       </header>
       <div id="reader-scroll" ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         {article ? (

@@ -9,7 +9,7 @@
 
 use crate::db::{self, ArticleQuery, ArticleRow, Sidebar};
 use crate::fetch::{self, Outcome};
-use crate::{feed, fulltext, opml, sanitize};
+use crate::{feed, fulltext, markdown, opml, sanitize, stockroom};
 use futures_util::StreamExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -164,12 +164,40 @@ fn settings_path(app: &AppHandle) -> CmdResult<PathBuf> {
         .join("settings.json"))
 }
 
+/// settings.json as a whole: the settings dialog's part, and stockroom's,
+/// which never goes to the window (it holds the token).
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct SettingsFile {
+    #[serde(flatten)]
+    app: AppSettings,
+    #[serde(default)]
+    stockroom: StockroomSettings,
+}
+
+/// Where articles go in stockroom, and the key to it (docs/STOCKROOM.md).
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct StockroomSettings {
+    /// From stockroom's connection question; None: not connected.
+    token: Option<String>,
+    /// stockroom's folder id; None: 未分類.
+    folder: Option<String>,
+    /// The folder's name when it was chosen, for the settings to show
+    /// without asking stockroom.
+    folder_name: Option<String>,
+    tags: Vec<String>,
+}
+
 fn load_settings(app: &AppHandle) -> AppSettings {
+    load_settings_file(app).app
+}
+
+fn load_settings_file(app: &AppHandle) -> SettingsFile {
     let Ok(path) = settings_path(app) else {
-        return AppSettings::default();
+        return SettingsFile::default();
     };
     let Ok(bytes) = fs::read(&path) else {
-        return AppSettings::default();
+        return SettingsFile::default();
     };
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         // Kept aside rather than overwritten by the next save.
@@ -178,8 +206,20 @@ fn load_settings(app: &AppHandle) -> AppSettings {
             &path,
             path.with_extension(format!("json.bad-{}", db::now_ms())),
         );
-        AppSettings::default()
+        SettingsFile::default()
     })
+}
+
+/// Written to a temporary file and renamed over the old one, so a crash
+/// mid-write never leaves half a file.
+fn save_settings_file(app: &AppHandle, file: &SettingsFile) -> CmdResult<()> {
+    let path = settings_path(app)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(err)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(file).map_err(err)?).map_err(err)?;
+    fs::rename(&tmp, &path).map_err(err)
 }
 
 #[tauri::command]
@@ -187,20 +227,15 @@ pub async fn get_app_settings(app: AppHandle) -> AppSettings {
     load_settings(&app)
 }
 
-/// Written to a temporary file and renamed over the old one, so a crash
-/// mid-write never leaves half a file.
+/// stockroom's part of the file stays as it is.
 #[tauri::command]
 pub async fn set_app_settings(app: AppHandle, settings: AppSettings) -> CmdResult<AppSettings> {
     if let Some(w) = app.get_webview_window("main") {
         apply_theme(&w, settings.theme);
     }
-    let path = settings_path(&app)?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(err)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(&settings).map_err(err)?).map_err(err)?;
-    fs::rename(&tmp, &path).map_err(err)?;
+    let mut file = load_settings_file(&app);
+    file.app = settings.clone();
+    save_settings_file(&app, &file)?;
     Ok(settings)
 }
 
@@ -256,14 +291,16 @@ pub async fn get_article(state: State<'_, AppState>, id: i64) -> CmdResult<Artic
     Ok(reader_article(a))
 }
 
-fn reader_article(a: db::ArticleFull) -> Article {
+/// The article's text as the reader shows it, sanitized: the page's (全文取得)
+/// when there is one, else the feed's content, else its summary.
+fn shown_html(a: &db::ArticleFull) -> (String, FullText) {
     let page = a
         .full_content
         .as_deref()
         .filter(|_| a.full_text && a.full_status == Some(db::FullStatus::Fetched));
     let full_text = if page.is_some() {
         FullText::Page
-    } else if page_pending(&a) {
+    } else if page_pending(a) {
         FullText::Pending
     } else {
         FullText::Feed
@@ -274,8 +311,13 @@ fn reader_article(a: db::ArticleFull) -> Article {
         None if a.content.trim().is_empty() => &a.summary,
         None => &a.content,
     };
+    (sanitize::article_html(source, base), full_text)
+}
+
+fn reader_article(a: db::ArticleFull) -> Article {
+    let (html, full_text) = shown_html(&a);
     Article {
-        html: sanitize::article_html(source, base),
+        html,
         full_text,
         id: a.id,
         feed_id: a.feed_id,
@@ -289,6 +331,41 @@ fn reader_article(a: db::ArticleFull) -> Article {
         starred: a.starred,
         later: a.later,
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticleMarkdown {
+    /// `<title>.md`, safe as a file name.
+    name: String,
+    markdown: String,
+}
+
+/// The article as one Markdown file (docs/STOCKROOM.md): what the reader
+/// shows, with a header of where it came from. `utc_offset_minutes` (east
+/// positive) dates it in the user's time zone.
+#[tauri::command]
+pub async fn article_markdown(
+    state: State<'_, AppState>,
+    id: i64,
+    utc_offset_minutes: i32,
+) -> CmdResult<ArticleMarkdown> {
+    let a = with_db(&state, |c| db::article(c, id))?.ok_or("記事が見つかりません")?;
+    Ok(to_markdown(&a, utc_offset_minutes))
+}
+
+fn to_markdown(a: &db::ArticleFull, utc_offset_minutes: i32) -> ArticleMarkdown {
+    let (html, _) = shown_html(a);
+    let meta = markdown::Meta {
+        title: &a.title,
+        url: a.url.as_deref(),
+        feed_title: &a.feed_title,
+        published: a.published,
+        saved: db::now_ms(),
+        utc_offset_minutes,
+    };
+    let (name, markdown) = markdown::article(&meta, &html);
+    ArticleMarkdown { name, markdown }
 }
 
 #[tauri::command]
@@ -685,6 +762,163 @@ pub async fn cancel_refresh(state: State<'_, AppState>) -> CmdResult<()> {
     Ok(())
 }
 
+// -------------------------------------------------------------- stockroom
+
+/// What the settings show of the connection to stockroom (no token).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockroomStatus {
+    connected: bool,
+    folder: Option<String>,
+    folder_name: Option<String>,
+    tags: Vec<String>,
+}
+
+fn stockroom_status_of(s: &StockroomSettings) -> StockroomStatus {
+    StockroomStatus {
+        connected: s.token.is_some(),
+        folder: s.folder.clone(),
+        folder_name: s.folder_name.clone(),
+        tags: s.tags.clone(),
+    }
+}
+
+/// Whether stockroom is connected and where articles go. Asks stockroom nothing.
+#[tauri::command]
+pub async fn stockroom_status(app: AppHandle) -> StockroomStatus {
+    stockroom_status_of(&load_settings_file(&app).stockroom)
+}
+
+/// Asks stockroom to connect, showing `code` (the window shows it too);
+/// waits while the user answers in stockroom.
+#[tauri::command]
+pub async fn stockroom_pair(app: AppHandle, code: String) -> CmdResult<StockroomStatus> {
+    if code.len() != 4 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("確認用の番号が正しくありません".into());
+    }
+    let token = stockroom::pair(stockroom::BASE, &code)
+        .await
+        .map_err(stockroom_message)?;
+    let mut file = load_settings_file(&app);
+    file.stockroom.token = Some(token);
+    save_settings_file(&app, &file)?;
+    Ok(stockroom_status_of(&file.stockroom))
+}
+
+/// Forgets the token (stockroom keeps allowing it until its token is made again there).
+#[tauri::command]
+pub async fn stockroom_disconnect(app: AppHandle) -> CmdResult<StockroomStatus> {
+    let mut file = load_settings_file(&app);
+    file.stockroom.token = None;
+    save_settings_file(&app, &file)?;
+    Ok(stockroom_status_of(&file.stockroom))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockroomChoices {
+    folders: Vec<stockroom::Folder>,
+    tags: Vec<String>,
+}
+
+/// stockroom's folders and tags, for choosing where articles go (asked when
+/// the settings show them).
+#[tauri::command]
+pub async fn stockroom_choices(app: AppHandle) -> CmdResult<StockroomChoices> {
+    let token = stockroom_token(&app)?;
+    let folders = stockroom::folders(stockroom::BASE, &token).await;
+    let folders = forget_if_unauthorized(&app, folders)?;
+    let tags = stockroom::tags(stockroom::BASE, &token).await;
+    let tags = forget_if_unauthorized(&app, tags)?;
+    Ok(StockroomChoices { folders, tags })
+}
+
+#[tauri::command]
+pub async fn set_stockroom_target(
+    app: AppHandle,
+    folder: Option<String>,
+    folder_name: Option<String>,
+    tags: Vec<String>,
+) -> CmdResult<StockroomStatus> {
+    let mut file = load_settings_file(&app);
+    file.stockroom.folder = folder;
+    file.stockroom.folder_name = folder_name;
+    let mut clean: Vec<String> = Vec::new();
+    for t in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        if !clean.iter().any(|c| c == t) {
+            clean.push(t.to_string());
+        }
+    }
+    file.stockroom.tags = clean;
+    save_settings_file(&app, &file)?;
+    Ok(stockroom_status_of(&file.stockroom))
+}
+
+/// The window tells this from any other error: it asks the user to connect.
+const NOT_CONNECTED: &str = "stockroom-not-connected";
+
+fn stockroom_token(app: &AppHandle) -> CmdResult<String> {
+    load_settings_file(app)
+        .stockroom
+        .token
+        .ok_or_else(|| NOT_CONNECTED.to_string())
+}
+
+fn stockroom_message(e: stockroom::Error) -> String {
+    match e {
+        stockroom::Error::Unauthorized => NOT_CONNECTED.into(),
+        stockroom::Error::Other(s) => s,
+    }
+}
+
+/// A token stockroom no longer takes (made again there) is forgotten, so the
+/// next try asks to connect again.
+fn forget_if_unauthorized<T>(app: &AppHandle, r: stockroom::Result<T>) -> CmdResult<T> {
+    if r.as_ref()
+        .is_err_and(|e| *e == stockroom::Error::Unauthorized)
+    {
+        let mut file = load_settings_file(app);
+        file.stockroom.token = None;
+        save_settings_file(app, &file)?;
+    }
+    r.map_err(stockroom_message)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sent {
+    /// stockroom already had the same text.
+    duplicate: bool,
+}
+
+/// The article as Markdown into stockroom, to the folder and tags of the
+/// settings. Fails with `NOT_CONNECTED` when there is no good token.
+#[tauri::command]
+pub async fn send_to_stockroom(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    utc_offset_minutes: i32,
+) -> CmdResult<Sent> {
+    let settings = load_settings_file(&app).stockroom;
+    let token = stockroom_token(&app)?;
+    let a = with_db(&state, |c| db::article(c, id))?.ok_or("記事が見つかりません")?;
+    let md = to_markdown(&a, utc_offset_minutes);
+    forget_if_unauthorized(&app, stockroom::check(stockroom::BASE, &token).await)?;
+    let item = stockroom::Item {
+        name: &md.name,
+        markdown: &md.markdown,
+        page: a.url.as_deref(),
+        folder: settings.folder.as_deref(),
+        tags: &settings.tags,
+    };
+    let duplicate = forget_if_unauthorized(
+        &app,
+        stockroom::import(stockroom::BASE, &token, &item).await,
+    )?;
+    Ok(Sent { duplicate })
+}
+
 // --------------------------------------------------------------- 全文取得
 
 /// Articles fetched from one feed after a refresh; older new ones are
@@ -1063,5 +1297,23 @@ mod tests {
         assert!(!s.auto_update);
         let s: AppSettings = serde_json::from_str(r#"{"markReadOn":"delay"}"#).unwrap();
         assert_eq!(s.mark_read_on, MarkReadOn::Delay);
+    }
+
+    #[test]
+    fn stockroom_settings_sit_beside_the_others_and_stay_out_of_the_window() {
+        // A file from before: no stockroom part.
+        let f: SettingsFile = serde_json::from_str(r#"{"keepDays":7}"#).unwrap();
+        assert_eq!(f.app.keep_days, 7);
+        assert!(f.stockroom.token.is_none() && f.stockroom.tags.is_empty());
+
+        let mut f = f;
+        f.stockroom.token = Some("t0k".into());
+        f.stockroom.tags = vec!["rss".into()];
+        let text = serde_json::to_string(&f).unwrap();
+        let back: SettingsFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.stockroom.token.as_deref(), Some("t0k"));
+        assert_eq!(back.app.keep_days, 7);
+        // What the window gets has no token.
+        assert!(!serde_json::to_string(&back.app).unwrap().contains("t0k"));
     }
 }
