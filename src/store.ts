@@ -17,6 +17,7 @@ import {
   type RefreshProgress,
   type Sidebar,
   type View,
+  type ExtensionPairRequest,
 } from "./lib/api";
 import { PANE_DEFAULT, savedWidth, type Pane } from "./lib/layout";
 import { DEFAULT_LIST_LAYOUT, validLayout, type ListLayout } from "./lib/listLayout";
@@ -165,6 +166,8 @@ export interface State {
   refreshing: RefreshProgress | null;
   updating: Updating | null;
   dialog: Dialog | null;
+  /** A browser extension asks to connect (over everything, docs/EXTENSION.md). */
+  extensionPair: ExtensionPairRequest | null;
   toasts: Toast[];
 
   init: () => Promise<void>;
@@ -223,6 +226,7 @@ export interface State {
   setUpdating: (u: Updating | null) => void;
   openDialog: (d: Dialog) => void;
   closeDialog: () => void;
+  setExtensionPair: (r: ExtensionPairRequest | null) => void;
 
   toast: (message: string, error?: boolean, action?: ToastAction) => void;
   /** A toast with a title, detail line and kind. Returns its id. */
@@ -361,6 +365,7 @@ export const useStore = create<State>((set, get) => {
     refreshing: null,
     updating: null,
     dialog: null,
+    extensionPair: null,
     toasts: [],
 
     init: async () => {
@@ -714,6 +719,7 @@ export const useStore = create<State>((set, get) => {
     setUpdating: (updating) => set({ updating }),
     openDialog: (dialog) => set({ dialog }),
     closeDialog: () => set({ dialog: null }),
+    setExtensionPair: (extensionPair) => set({ extensionPair }),
 
     toast: (message, error, action) => void get().notify({ title: message, kind: error ? "error" : "info", action }),
     notify: ({ title, detail, kind = "info", action, duration, replace }) => {

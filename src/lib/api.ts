@@ -121,6 +121,24 @@ export interface StockroomChoices {
   tags: string[];
 }
 
+/** The browser extension's receiver (docs/EXTENSION.md). */
+export interface ExtensionStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  /** Why it isn't running although it's on. */
+  error: string | null;
+  /** Where the extension was written out, if it was. */
+  folder: string | null;
+}
+
+/** An extension asks to connect (the "extension-pair" event). */
+export interface ExtensionPairRequest {
+  id: string;
+  code: string;
+  extension: string;
+}
+
 /** What the OS handed over to open (docs/OPEN_WITH.md): a `feed:` link's feed, or an .opml file. */
 export type OpenRequest = { kind: "feed"; url: string } | { kind: "opml"; path: string };
 
@@ -240,6 +258,20 @@ export const api = {
   onIconsChanged: (cb: () => void): Promise<UnlistenFn> => listen("icons-changed", () => cb()),
 
   importOpml: (path: string) => invoke<Imported>("import_opml", { path }),
+  extensionStatus: () => invoke<ExtensionStatus>("extension_status"),
+  setExtensionReceiver: (enabled: boolean) => invoke<ExtensionStatus>("set_extension_receiver", { enabled }),
+  /** A new key: every extension connected before is cut off. */
+  resetExtensionToken: () => invoke<ExtensionStatus>("reset_extension_token"),
+  /** Writes the extension out with its key and shows the folder; returns it. */
+  installExtension: () => invoke<string>("install_extension"),
+  answerExtensionPair: (id: string, allow: boolean) => invoke<void>("answer_extension_pair", { id, allow }),
+  onExtensionPair: (cb: (r: ExtensionPairRequest) => void): Promise<UnlistenFn> =>
+    listen<ExtensionPairRequest>("extension-pair", (e) => cb(e.payload)),
+  onExtensionPairEnd: (cb: (id: string) => void): Promise<UnlistenFn> =>
+    listen<string>("extension-pair-end", (e) => cb(e.payload)),
+  /** A feed subscribed or a page saved from the browser: what to say. */
+  onExtensionChanged: (cb: (message: string) => void): Promise<UnlistenFn> =>
+    listen<string>("extension-changed", (e) => cb(e.payload)),
   /** What the OS handed over since last asked (kept in Rust until the window takes it). */
   takeOpenRequests: () => invoke<OpenRequest[]>("take_open_requests"),
   onOpenRequested: (cb: () => void): Promise<UnlistenFn> => listen("open-requested", () => cb()),

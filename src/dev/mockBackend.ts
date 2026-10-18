@@ -15,6 +15,7 @@ import type {
   FeedInfo,
   FeedRow,
   FolderRow,
+  ExtensionStatus,
   Imported,
   OpenRequest,
   RefreshSummary,
@@ -67,6 +68,37 @@ const openRequests: OpenRequest[] = [];
 (window as unknown as { __MOCK_OPEN__: (r: OpenRequest) => void }).__MOCK_OPEN__ = (r) => {
   openRequests.push(r);
   void emit("open-requested", null);
+};
+
+/**
+ * The browser extension's receiver (commands.rs). From the console:
+ * `__MOCK_EXTENSION__("pair")` asks to connect, `__MOCK_EXTENSION__("later")`
+ * saves a page, as the extension would.
+ */
+const extension: ExtensionStatus = { enabled: false, running: false, port: 41630, error: null, folder: null };
+(window as unknown as { __MOCK_EXTENSION__: (what: "pair" | "later") => void }).__MOCK_EXTENSION__ = (what) => {
+  if (what === "pair") void emit("extension-pair", { id: `mock${Date.now()}`, code: "4821", extension: "abcdefghijklmnop" });
+  else {
+    const id = ++articleSeq;
+    articles.push({
+      id,
+      feedId: 1,
+      title: `保存したページ ${id}`,
+      summary: LOREM,
+      url: `https://example.com/saved/${id}`,
+      published: Date.now(),
+      read: true,
+      starred: false,
+      later: true,
+      laterAt: Date.now(),
+      author: null,
+      thumbUrl: null,
+      html: `<p>${LOREM}</p>`,
+      fullStatus: null,
+      fullHtml: null,
+    });
+    void emit("extension-changed", `「保存したページ ${id}」をあとで読むに入れました`);
+  }
 };
 
 /** stockroom as commands.rs keeps it (the token stays here). Connecting takes a moment, as if the user answered in stockroom. */
@@ -269,6 +301,18 @@ async function handle(cmd: string, a: any): Promise<unknown> {
         markdown: `# ${r.title}\n\n- 元のページ：${r.url}\n- フィード：${r.feedTitle}\n- 公開：${day(r.published)}\n- 保存：${day(Date.now())}（Feedability から）\n\n---\n\n${body}\n`,
       } satisfies ArticleMarkdown;
     }
+    case "extension_status":
+      return { ...extension };
+    case "set_extension_receiver":
+      extension.enabled = extension.running = a.enabled;
+      return { ...extension };
+    case "reset_extension_token":
+      return { ...extension };
+    case "install_extension":
+      extension.folder = "/Users/me/Library/Application Support/com.local.feedability/extension";
+      return extension.folder;
+    case "answer_extension_pair":
+      return null;
     case "take_open_requests":
       return openRequests.splice(0);
     case "stockroom_status":

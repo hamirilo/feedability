@@ -1,8 +1,10 @@
 pub mod commands;
 pub mod db;
+pub mod extension;
 pub mod feed;
 pub mod fetch;
 pub mod fulltext;
+pub mod loopback;
 pub mod markdown;
 pub mod opened;
 pub mod opml;
@@ -146,6 +148,8 @@ pub fn run() {
             }
             main_window(app.handle())?;
             listen_for_opened(app.handle());
+            // The browser extension's receiver, if it was left on (off by default).
+            start_extension_receiver(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -183,6 +187,11 @@ pub fn run() {
             set_stockroom_target,
             send_to_stockroom,
             take_open_requests,
+            extension_status,
+            set_extension_receiver,
+            reset_extension_token,
+            install_extension,
+            answer_extension_pair,
             import_opml,
             export_opml,
             reveal_log,

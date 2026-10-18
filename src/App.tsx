@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { ArticleList } from "./components/ArticleList";
 import { Dialogs } from "./components/Dialogs";
+import { ExtensionPairDialog } from "./components/ExtensionSettings";
 import { Reader } from "./components/Reader";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
@@ -30,6 +31,7 @@ export default function App() {
     let unlistenIcons: (() => void) | undefined;
     let unlistenFullText: (() => void) | undefined;
     let unlistenOpen: (() => void) | undefined;
+    const unlistenExtension: (() => void)[] = [];
     api
       .onRefreshProgress((p) => useStore.getState().setRefreshing(p))
       .then((u) => (unlisten = u))
@@ -60,6 +62,22 @@ export default function App() {
     void Promise.all([useStore.getState().init(), listening]).then(() => {
       if (!stopped) void lookAtHandedOver();
     });
+    // The browser extension: its request to connect, and what it sent.
+    for (const u of [
+      api.onExtensionPair((r) => useStore.getState().setExtensionPair(r)),
+      api.onExtensionPairEnd((id) => {
+        if (useStore.getState().extensionPair?.id === id) useStore.getState().setExtensionPair(null);
+      }),
+      api.onExtensionChanged((message) => {
+        const s = useStore.getState();
+        s.toast(message);
+        void s.reloadSidebar();
+        void s.reload();
+      }),
+    ]) {
+      // Unmounted before it was listening: stop at once, or every message shows twice.
+      u.then((f) => (stopped ? f() : unlistenExtension.push(f))).catch((e) => warn("extension", e));
+    }
     return () => {
       uninstallMenu();
       stopUpdate();
@@ -68,6 +86,7 @@ export default function App() {
       unlistenFullText?.();
       stopped = true;
       unlistenOpen?.();
+      unlistenExtension.forEach((f) => f());
     };
   }, []);
 
@@ -110,6 +129,7 @@ export default function App() {
       <ArticleList />
       <Reader />
       <Dialogs />
+      <ExtensionPairDialog />
       <Toasts />
     </div>
   );

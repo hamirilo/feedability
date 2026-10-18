@@ -24,8 +24,8 @@ v0.1.0 のあとの機能追加の計画。優先するのは **読む体験** �
 | 4 | 全文取得（要約だけのフィードの本文をページから取る）（対応済み、[FULL_TEXT.md](FULL_TEXT.md)） | 読む | L | —（決定済み：ADR-0001 を更新、`dom_smoothie`） |
 | 5 | 記事を stockroom へ送る（対応済み、[STOCKROOM.md](STOCKROOM.md)） | 連携 | S + M | — （決定済み：[ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)、`htmd`、stockroom の受け口） |
 | 6 | `feed:` リンクと .opml ファイルから購読（対応済み、[OPEN_WITH.md](OPEN_WITH.md)。共有メニューは見送り） | 連携 | M | —（決定済み：`tauri-plugin-deep-link`。capabilities は結局足していない） |
-| 7 | ブラウザ拡張から購読・記事を送る | 連携 | L | 待ち受けポート |
-| 8 | Claude（MCP）から読む・整理する | 連携 | L | 待ち受けポート、AI に公開する操作の範囲 |
+| 7 | ブラウザ拡張から購読・記事を送る（対応済み、[EXTENSION.md](EXTENSION.md)） | 連携 | L | —（決定済み：127.0.0.1:41630、[ADR-0005](../decisions/adr-0005-browser-extension-receiver.md)） |
+| 8 | Claude（MCP）から読む・整理する | 連携 | L | AI に公開する操作の範囲（ポートは 41631 を予定） |
 
 後回し（順番は決めない）：
 
@@ -113,6 +113,8 @@ Feedability はフロー、stockroom はストック。取っておきたい記�
 - 二重起動の防止（single-instance）と組み合わせ、2 回目の起動の引数を今のウィンドウに渡す
 
 ## フェーズ 7：ブラウザ拡張から購読・記事を送る（L）
+
+対応済み。決めたことは [EXTENSION.md](EXTENSION.md)（フィードに属さない記事は「保存したページ」のフィードの行、`user_version` は 6、ページは拡張が HTML で送る）。以下は計画のときのもの。
 
 - 見ているページのフィードをワンクリックで購読する（ページからの探索は今の `feed::discover` を使う）
 - 拡張の中で、フィードに無いページを「あとで読む」に入れる（フィードに属さない記事。`feeds` に「保存した記事」の行を 1 つ作るか、`articles.feed_id` を NULL 可にするかは実装時に決める）

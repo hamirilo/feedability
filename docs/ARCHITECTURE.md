@@ -7,7 +7,7 @@ desktop-platform の Architecture Standard の層（shell / core / features）�
 | 層 | 中身 |
 |---|---|
 | shell | `proxy.rs`、updater（`src/lib/update.ts`）、log の配線（`lib.rs`、`src/lib/log.ts`）、single-instance、window-state、`settings.json`、タイトルバー（`src/lib/titleBar.ts`）。stockroom から写したもので、desktop-base ができたら差し替える |
-| core | それ以外。データ（`db.rs`）、取得（`fetch.rs`）、解析（`feed.rs`、`opml.rs`）、全文取得の抜き出し（`fulltext.rs`）、OS から開かれたもの（`opened.rs`）、本文の安全化（`sanitize.rs`）、画面 |
+| core | それ以外。データ（`db.rs`）、取得（`fetch.rs`）、解析（`feed.rs`、`opml.rs`）、全文取得の抜き出し（`fulltext.rs`）、OS から開かれたもの（`opened.rs`）、ブラウザ拡張の受付（`loopback.rs`・`extension.rs`）、本文の安全化（`sanitize.rs`）、画面 |
 
 ## データの流れ
 
@@ -25,6 +25,7 @@ fetch::get_page ──▶ fulltext.rs ──full_content──▶ │（全文�
 ```
 
 - **外への通信は `fetch.rs` だけ**。WebView は外へ出ない（CSP の `connect-src` と `img-src` に外の出どころが無い）。理由は [ADR-0001](../decisions/adr-0001-fetching-feeds.md)
+- **待ち受けるのは `extension.rs`（`loopback.rs` の上）だけ**。127.0.0.1:41630、設定でオンの間だけ。理由は [ADR-0005](../decisions/adr-0005-browser-extension-receiver.md)
 - **127.0.0.1 の stockroom へは `stockroom.rs` だけ**。送り先は `127.0.0.1:41620` に固定、プロキシを通さない、ユーザーが送ると選んだときだけ。理由は [ADR-0004](../decisions/adr-0004-sending-to-stockroom.md)
 - **本文の HTML は 2 重に守る**：Rust の ammonia でスクリプト・イベント属性・スタイル・フォーム・iframe を落とし、CSP の `script-src 'self'` でもインラインのスクリプトを止める
 - 記事の `content` には **フィードの HTML をそのまま** 保存し、表示するたびに安全化する。安全化の規則を変えたとき、古い記事にも新しい規則が効く
