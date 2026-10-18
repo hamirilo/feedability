@@ -75,7 +75,7 @@ fn from_model(feed: Feed, base: &str) -> ParsedFeed {
         site_url,
         icon: feed.icon.and_then(|i| absolute(base, &i.uri)),
         logo: feed.logo.and_then(|i| absolute(base, &i.uri)),
-        articles: feed.entries.into_iter().map(article).collect(),
+        articles: feed.entries.into_iter().map(|e| article(e, base)).collect(),
     }
 }
 
@@ -89,7 +89,8 @@ fn absolute(base: &str, href: &str) -> Option<String> {
     matches!(u.scheme(), "http" | "https").then(|| u.to_string())
 }
 
-fn article(e: Entry) -> NewArticle {
+/// `base` is the feed's URL, for an article without its own.
+fn article(e: Entry, base: &str) -> NewArticle {
     let url = e
         .links
         .iter()
@@ -127,6 +128,7 @@ fn article(e: Entry) -> NewArticle {
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| truncate(&summary, 60));
     let published = e.published.or(e.updated).map(|d| d.timestamp_millis());
+    let thumb_url = thumbnail(&e.media, &body, url.as_deref().unwrap_or(base));
     NewArticle {
         guid: if e.id.is_empty() {
             stable_hash(&[&body, &published.unwrap_or(0).to_string()])
@@ -147,7 +149,52 @@ fn article(e: Entry) -> NewArticle {
         summary,
         content: body,
         published,
+        thumb_url,
     }
+}
+
+/// The picture for the list's 画像付き layout (docs/LIST_LAYOUT.md): the
+/// feed's own thumbnail (`<media:thumbnail>` next to a `<media:content>`;
+/// feed-rs drops a lone one), else an
+/// image it attaches (`<media:content>`, `<enclosure>`), else the first
+/// `<img>` of the body. Relative URLs resolve against the article's URL, as
+/// in the reader (sanitize.rs). SVG is left out: the app doesn't show it.
+fn thumbnail(media: &[feed_rs::model::MediaObject], body: &str, base: &str) -> Option<String> {
+    let usable = |u: &str| absolute(base, u).filter(|u| !is_svg(u));
+    let declared = media
+        .iter()
+        .flat_map(|m| &m.thumbnails)
+        .find_map(|t| usable(&t.image.uri))
+        .or_else(|| {
+            media
+                .iter()
+                .flat_map(|m| &m.content)
+                .filter(|c| {
+                    c.content_type
+                        .as_ref()
+                        .is_some_and(|t| t.to_string().starts_with("image/"))
+                })
+                .find_map(|c| c.url.as_ref().and_then(|u| usable(u.as_str())))
+        });
+    declared.or_else(|| {
+        tags(body.as_bytes(), "img").into_iter().find_map(|attrs| {
+            let get = |k: &str| attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+            // A 1x1 counter or a spacer, not a picture of the article.
+            let tiny = |k: &str| {
+                get(k)
+                    .and_then(|v| v.trim().parse::<u32>().ok())
+                    .is_some_and(|n| n <= 2)
+            };
+            if tiny("width") || tiny("height") {
+                return None;
+            }
+            usable(get("src")?)
+        })
+    })
+}
+
+fn is_svg(u: &str) -> bool {
+    url::Url::parse(u).is_ok_and(|u| u.path().to_ascii_lowercase().ends_with(".svg"))
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -258,17 +305,27 @@ pub fn looks_like_html(bytes: &[u8]) -> bool {
 /// The attributes of every `<link>` in a page's start, in the page's order.
 fn link_tags(html: &[u8]) -> Vec<Vec<(String, String)>> {
     // The <head> is enough, and the tags are ASCII whatever the page's encoding.
+    tags(html, "link")
+}
+
+/// The attributes of every `<name ...>` tag in the first 512 KB, in order.
+fn tags(html: &[u8], name: &str) -> Vec<Vec<(String, String)>> {
     let text = String::from_utf8_lossy(&html[..html.len().min(512 * 1024)]);
     let lower = text.to_ascii_lowercase();
+    let open = format!("<{name}");
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(i) = lower[from..].find("<link") {
+    while let Some(i) = lower[from..].find(&open) {
         let start = from + i;
         let Some(len) = lower[start..].find('>') else {
             break;
         };
-        out.push(attributes(&text[start..start + len]));
         from = start + len;
+        // `<img` is not `<image`.
+        let after = lower[start + open.len()..].chars().next();
+        if after.is_some_and(|c| c.is_whitespace() || c == '/' || c == '>') {
+            out.push(attributes(&text[start..start + len]));
+        }
     }
     out
 }
@@ -482,6 +539,45 @@ mod tests {
         assert!(!b.guid.is_empty());
         let again = parse(RSS.as_bytes(), "https://blog.example.com/feed").unwrap();
         assert_eq!(again.articles[1].guid, b.guid);
+    }
+
+    #[test]
+    fn finds_the_articles_picture() {
+        let thumb = |item: &str| {
+            let xml = format!(
+                r#"<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>T</title>
+                <item><title>A</title><link>https://blog.example.com/2025/a</link>{item}</item></channel></rss>"#
+            );
+            parse(xml.as_bytes(), "https://blog.example.com/feed")
+                .unwrap()
+                .articles[0]
+                .thumb_url
+                .clone()
+        };
+        // The feed's own thumbnail comes first. (feed-rs keeps one only
+        // next to a <media:content>: a lone <media:thumbnail> is dropped.)
+        assert_eq!(
+            thumb(r#"<media:group><media:content url="https://cdn.example.com/v.mp4" type="video/mp4"/><media:thumbnail url="https://cdn.example.com/t.jpg"/></media:group><description>&lt;img src="b.png"&gt;</description>"#)
+                .as_deref(),
+            Some("https://cdn.example.com/t.jpg")
+        );
+        // Then an attached image, not an attached sound.
+        assert_eq!(
+            thumb(r#"<enclosure url="https://cdn.example.com/a.mp3" type="audio/mpeg" length="1"/><enclosure url="https://cdn.example.com/e.png" type="image/png" length="1"/>"#)
+                .as_deref(),
+            Some("https://cdn.example.com/e.png")
+        );
+        // Then the first real <img> of the body, relative to the article.
+        assert_eq!(
+            thumb(r#"<description>&lt;img src="/px.gif" width="1" height="1"&gt;&lt;image src="x"&gt;&lt;IMG alt="x" src="img/b.png"&gt;</description>"#)
+                .as_deref(),
+            Some("https://blog.example.com/2025/img/b.png")
+        );
+        assert_eq!(
+            thumb(r#"<description>&lt;img src="logo.svg"&gt;</description>"#),
+            None
+        );
+        assert_eq!(thumb("<description>text only</description>"), None);
     }
 
     #[test]

@@ -71,6 +71,8 @@ function addArticle(feedId: number, published: number, n: number) {
     later: n % 13 === 0,
     laterAt: n % 13 === 0 ? published - n : null,
     author: n % 2 ? "山田 太郎" : null,
+    // One in four without a picture, for the 画像付き layout.
+    thumbUrl: n % 4 === 0 ? null : `https://example.com/photo-${id}.png`,
     html:
       `<p>${LOREM}</p><h2>見出し</h2><p>本文の中の <a href="https://example.com/">リンク</a> はブラウザで開きます。</p>` +
       `<ul><li>項目 1</li><li>項目 2</li></ul><blockquote>引用です。</blockquote>` +
@@ -220,6 +222,14 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       const name = String(a.url).split("/").pop();
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="480" height="270"><rect width="100%" height="100%" fill="#3a3b42"/><text x="50%" y="50%" fill="#9a9ba3" font-size="16" text-anchor="middle" font-family="sans-serif">${name}</text></svg>`;
       await sleep(300);
+      return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    }
+    case "thumbnail_data_url": {
+      // A coloured square, a different hue for each picture.
+      const n = Number(String(a.url).match(/(\d+)\.png$/)?.[1] ?? 0);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="hsl(${(n * 47) % 360} 45% 55%)"/></svg>`;
+      await sleep(150 + (n % 5) * 60);
+      if (n % 9 === 0) throw "画像ではありません";
       return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
     }
     case "open_url":

@@ -19,6 +19,7 @@ import {
   type View,
 } from "./lib/api";
 import { PANE_DEFAULT, savedWidth, type Pane } from "./lib/layout";
+import { DEFAULT_LIST_LAYOUT, validLayout, type ListLayout } from "./lib/listLayout";
 import { warn } from "./lib/log";
 import {
   DEFAULT_LINE_HEIGHT,
@@ -85,6 +86,8 @@ interface Prefs {
   unreadOnly: boolean;
   /** Oldest first (not in あとで読む, which keeps the order it was filled in). */
   oldestFirst: boolean;
+  /** The list's rows (docs/LIST_LAYOUT.md). */
+  listLayout: ListLayout;
   collapsed: number[];
   /** Pane widths in px (docs/LAYOUT.md). */
   sidebarWidth: number;
@@ -98,6 +101,7 @@ function loadPrefs(): Prefs {
   const fallback: Prefs = {
     unreadOnly: true,
     oldestFirst: false,
+    listLayout: DEFAULT_LIST_LAYOUT,
     collapsed: [],
     sidebarWidth: PANE_DEFAULT.sidebar,
     listWidth: PANE_DEFAULT.list,
@@ -111,6 +115,7 @@ function loadPrefs(): Prefs {
       ...p,
       sidebarWidth: savedWidth("sidebar", p.sidebarWidth),
       listWidth: savedWidth("list", p.listWidth),
+      listLayout: validLayout(p.listLayout),
       textSize: validStep(p.textSize, TEXT_SIZES.length, fallback.textSize),
       lineHeight: validStep(p.lineHeight, LINE_HEIGHTS.length, fallback.lineHeight),
       textWidth: validStep(p.textWidth, TEXT_WIDTHS.length, fallback.textWidth),
@@ -132,6 +137,7 @@ export interface State {
   view: View;
   unreadOnly: boolean;
   oldestFirst: boolean;
+  listLayout: ListLayout;
   /** The saved pane widths; what is drawn is kept inside the window (usePaneWidths). */
   sidebarWidth: number;
   listWidth: number;
@@ -172,6 +178,7 @@ export interface State {
   moveFeed: (delta: 1 | -1) => void;
   setUnreadOnly: (on: boolean) => void;
   setOldestFirst: (on: boolean) => void;
+  setListLayout: (layout: ListLayout) => void;
   /** While dragging a pane's handle: in memory only; `savePaneWidths` on release. */
   setPaneWidth: (pane: Pane, width: number) => void;
   savePaneWidths: () => void;
@@ -244,6 +251,7 @@ export const useStore = create<State>((set, get) => {
     savePrefs({
       unreadOnly: get().unreadOnly,
       oldestFirst: get().oldestFirst,
+      listLayout: get().listLayout,
       collapsed: [...get().collapsed],
       sidebarWidth: get().sidebarWidth,
       listWidth: get().listWidth,
@@ -326,6 +334,7 @@ export const useStore = create<State>((set, get) => {
     view: { kind: "all" },
     unreadOnly: prefs.unreadOnly,
     oldestFirst: prefs.oldestFirst,
+    listLayout: prefs.listLayout,
     sidebarWidth: prefs.sidebarWidth,
     listWidth: prefs.listWidth,
     textSize: prefs.textSize,
@@ -460,6 +469,12 @@ export const useStore = create<State>((set, get) => {
       set({ oldestFirst: on });
       savePrefsNow();
       void get().reload();
+    },
+
+    // Display only: the list isn't asked again.
+    setListLayout: (layout) => {
+      set({ listLayout: validLayout(layout) });
+      savePrefsNow();
     },
 
     setPaneWidth: (pane, width) => set(pane === "sidebar" ? { sidebarWidth: width } : { listWidth: width }),

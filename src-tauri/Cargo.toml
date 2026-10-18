@@ -47,6 +47,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # Article images handed to the reader as data: URLs (commands.rs `image_data_url`).
 base64 = "0.22"
+# The list's 画像付き thumbnails, made small before they reach the window
+# (thumb.rs). Only the formats `fetch::image_type` passes and the crate
+# decodes in pure Rust: AVIF would need dav1d (C), so it goes as it is.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 # Several feeds fetched at a time while refreshing (fetch.rs).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 

@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 3;
+const VERSION: i64 = 4;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -126,6 +126,20 @@ fn migrate(conn: &Connection) -> DbResult<()> {
              ALTER TABLE feeds ADD COLUMN icon_checked_at INTEGER;
              ALTER TABLE feeds ADD COLUMN icon_url TEXT;
              ALTER TABLE feeds ADD COLUMN logo_url TEXT;
+             COMMIT;",
+        )?;
+    }
+    if version < 4 {
+        // The list's 画像付き layout (docs/LIST_LAYOUT.md): the URL of the
+        // article's picture, found when it is stored; NULL: none. Articles
+        // stored before get one at the next refresh that still lists them:
+        // the conditional-request headers are cleared so that refresh reads
+        // every feed once, where a 304 would skip storing. An older app
+        // ignores the column.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE articles ADD COLUMN thumb_url TEXT;
+             UPDATE feeds SET etag = NULL, last_modified = NULL;
              COMMIT;",
         )?;
     }
@@ -556,6 +570,8 @@ pub struct NewArticle {
     pub summary: String,
     pub content: String,
     pub published: Option<i64>,
+    /// The picture for the list (feed.rs `thumbnail`).
+    pub thumb_url: Option<String>,
 }
 
 /// Adds the feed's new articles and updates the ones it already had (a
@@ -572,11 +588,12 @@ pub fn store_articles(
     {
         let mut exists = tx.prepare("SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2")?;
         let mut insert = tx.prepare(
-            "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at, thumb_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
         )?;
         let mut update = tx.prepare(
-            "UPDATE articles SET url = ?2, title = ?3, author = ?4, summary = ?5, content = ?6, seen_at = ?7
+            "UPDATE articles SET url = ?2, title = ?3, author = ?4, summary = ?5, content = ?6, seen_at = ?7,
+                                 thumb_url = ?8
              WHERE id = ?1",
         )?;
         for a in articles {
@@ -586,7 +603,14 @@ pub fn store_articles(
             match id {
                 Some(id) => {
                     update.execute(params![
-                        id, a.url, a.title, a.author, a.summary, a.content, now
+                        id,
+                        a.url,
+                        a.title,
+                        a.author,
+                        a.summary,
+                        a.content,
+                        now,
+                        a.thumb_url
                     ])?;
                 }
                 None => {
@@ -594,8 +618,16 @@ pub fn store_articles(
                     // it would sit at the top of the list for good.
                     let published = a.published.map_or(now, |p| p.min(now));
                     insert.execute(params![
-                        feed_id, a.guid, a.url, a.title, a.author, a.summary, a.content, published,
-                        now
+                        feed_id,
+                        a.guid,
+                        a.url,
+                        a.title,
+                        a.author,
+                        a.summary,
+                        a.content,
+                        published,
+                        now,
+                        a.thumb_url
                     ])?;
                     added += 1;
                 }
@@ -674,6 +706,8 @@ pub struct ArticleRow {
     pub read: bool,
     pub starred: bool,
     pub later: bool,
+    /// The picture for the 画像付き layout, fetched only for the rows in sight.
+    pub thumb_url: Option<String>,
 }
 
 /// How much of the summary the list gets: two lines at most are shown.
@@ -733,7 +767,7 @@ pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<Artic
     }
     let sql = format!(
         "SELECT a.id, a.feed_id, COALESCE(f.custom_title, f.title), a.title, substr(a.summary, 1, {LIST_SUMMARY_CHARS}),
-                a.url, a.published, a.read, a.starred, a.later_at IS NOT NULL
+                a.url, a.published, a.read, a.starred, a.later_at IS NOT NULL, a.thumb_url
          FROM articles a JOIN feeds f ON f.id = a.feed_id
          WHERE {sql_filter}
          ORDER BY {order}",
@@ -758,6 +792,7 @@ pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<Artic
             read: r.get(7)?,
             starred: r.get(8)?,
             later: r.get(9)?,
+            thumb_url: r.get(10)?,
         })
     })?;
     rows.collect()
@@ -874,6 +909,7 @@ mod tests {
             summary: format!("{title} の要約"),
             content: format!("<p>{title}</p>"),
             published: Some(published),
+            thumb_url: None,
         }
     }
 
@@ -1140,6 +1176,24 @@ mod tests {
             .unwrap();
         conn.execute("UPDATE feeds SET icon = 'x', icon_checked_at = 1", [])
             .unwrap();
+        conn.execute("UPDATE articles SET thumb_url = 'x'", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn keeps_the_picture_up_to_date() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://example.com/feed", "Example", None, None).unwrap();
+        let with = |thumb: Option<&str>| NewArticle {
+            thumb_url: thumb.map(String::from),
+            ..art("a", "A", 1000)
+        };
+        let thumb = |conn: &Connection| query_articles(conn, &all()).unwrap()[0].thumb_url.clone();
+        store_articles(&mut conn, feed, &[with(None)]).unwrap();
+        assert_eq!(thumb(&conn), None);
+        // An article stored before the column gets its picture on the next refresh.
+        store_articles(&mut conn, feed, &[with(Some("https://example.com/a.jpg"))]).unwrap();
+        assert_eq!(thumb(&conn).as_deref(), Some("https://example.com/a.jpg"));
     }
 
     #[test]
@@ -1149,7 +1203,9 @@ mod tests {
             "CREATE TABLE feeds (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
                custom_title TEXT, site_url TEXT, folder_id INTEGER, added_at INTEGER NOT NULL,
                fetched_at INTEGER, error TEXT, etag TEXT, last_modified TEXT);
-             INSERT INTO feeds (id, url, title, added_at) VALUES (1, 'https://a.example/feed', 'A', 0);
+             CREATE TABLE articles (id INTEGER PRIMARY KEY);
+             INSERT INTO feeds (id, url, title, added_at, etag, last_modified)
+               VALUES (1, 'https://a.example/feed', 'A', 0, 'v1', 'Sat, 17 Oct 2026 00:00:00 GMT');
              PRAGMA user_version = 2;",
         )
         .unwrap();
@@ -1157,9 +1213,15 @@ mod tests {
         let v: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, VERSION);
         // The existing feed has never been looked up.
         assert_eq!(feeds_needing_icon(&conn, 0).unwrap().len(), 1);
+        // Version 4: read in full once, so its articles get their pictures.
+        let t = &feed_targets(&conn, None).unwrap()[0];
+        assert_eq!(
+            (t.etag.as_deref(), t.last_modified.as_deref()),
+            (None, None)
+        );
         set_icon(
             &conn,
             1,
