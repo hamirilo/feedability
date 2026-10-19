@@ -18,7 +18,7 @@ export function Dialogs() {
   if (!dialog) return null;
   switch (dialog.kind) {
     case "settings":
-      return <SettingsDialog page={dialog.page} onClose={close} />;
+      return <SettingsDialog page={dialog.page} muteScope={dialog.muteScope} onClose={close} />;
     case "shortcuts":
       return <ShortcutHelp onClose={close} />;
     case "addFeed":

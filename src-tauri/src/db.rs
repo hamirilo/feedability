@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 6;
+const VERSION: i64 = 7;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -165,6 +165,25 @@ fn migrate(conn: &Connection) -> DbResult<()> {
         conn.execute_batch(
             "BEGIN;
              ALTER TABLE feeds ADD COLUMN saved INTEGER NOT NULL DEFAULT 0;
+             COMMIT;",
+        )?;
+    }
+    if version < 7 {
+        // ミュート (docs/MUTE.md): new articles with all of `words` in them
+        // are marked read when stored. In one feed, one folder, or all (both
+        // NULL). `action` is what a rule does, 'read' the only one so far. An
+        // older app ignores the table.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS rules (
+               id INTEGER PRIMARY KEY,
+               words TEXT NOT NULL,
+               feed_id INTEGER REFERENCES feeds(id) ON DELETE CASCADE,
+               folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+               action TEXT NOT NULL DEFAULT 'read',
+               enabled INTEGER NOT NULL DEFAULT 1,
+               created_at INTEGER NOT NULL
+             );
              COMMIT;",
         )?;
     }
@@ -608,7 +627,8 @@ pub struct NewArticle {
 /// Adds the feed's new articles and updates the ones it already had (a
 /// corrected title or text). Read and starred stay as they were, and so does
 /// the text from the page (全文取得). New articles of a feed with 全文取得 on
-/// are queued for it. Returns how many were new.
+/// are queued for it, unless a ミュート rule marks them read. Returns how many
+/// were new.
 pub fn store_articles(
     conn: &mut Connection,
     feed_id: i64,
@@ -618,12 +638,13 @@ pub fn store_articles(
     let tx = conn.transaction()?;
     let mut added = 0;
     {
+        let rules = rules_for_feed(&tx, feed_id)?;
         let mut exists = tx.prepare("SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2")?;
         let mut insert = tx.prepare(
             "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at, thumb_url,
-                                   full_status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10,
-                     (SELECT CASE WHEN full_text = 1 THEN 0 END FROM feeds WHERE id = ?1))",
+                                   read, full_status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11,
+                     (SELECT CASE WHEN full_text = 1 AND ?11 = 0 THEN 0 END FROM feeds WHERE id = ?1))",
         )?;
         let mut update = tx.prepare(
             "UPDATE articles SET url = ?2, title = ?3, author = ?4, summary = ?5, content = ?6, seen_at = ?7,
@@ -651,6 +672,7 @@ pub fn store_articles(
                     // Dated in the future (a wrong clock, a scheduled post):
                     // it would sit at the top of the list for good.
                     let published = a.published.map_or(now, |p| p.min(now));
+                    let muted = rules.iter().any(|r| r.matches(&a.title, &a.summary));
                     insert.execute(params![
                         feed_id,
                         a.guid,
@@ -661,7 +683,8 @@ pub fn store_articles(
                         a.content,
                         published,
                         now,
-                        a.thumb_url
+                        a.thumb_url,
+                        muted
                     ])?;
                     added += 1;
                 }
@@ -1071,6 +1094,123 @@ pub fn mark_all_read(conn: &mut Connection, q: &ArticleQuery) -> DbResult<Vec<i6
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(args), |r| r.get(0))?;
         rows.collect::<DbResult<_>>()?
+    };
+    set_read(conn, &ids, true)?;
+    Ok(ids)
+}
+
+// ------------------------------------------------------------------ rules
+
+/// A ミュート rule (docs/MUTE.md).
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Rule {
+    pub id: i64,
+    /// Words separated by spaces, all of which an article has (as the search).
+    pub words: String,
+    /// Where it applies: one feed, one folder, or (both None) all of them.
+    pub feed_id: Option<i64>,
+    pub folder_id: Option<i64>,
+    pub enabled: bool,
+}
+
+impl Rule {
+    /// Whether an article has every word in its title or summary, ignoring
+    /// case, as the search does (`filter`).
+    pub fn matches(&self, title: &str, summary: &str) -> bool {
+        let text = format!("{title}\n{summary}").to_lowercase();
+        let mut words = self.words.split_whitespace().peekable();
+        words.peek().is_some() && words.all(|w| text.contains(&w.to_lowercase()))
+    }
+}
+
+const RULE_COLUMNS: &str = "id, words, feed_id, folder_id, enabled";
+
+fn rule_row(r: &rusqlite::Row) -> DbResult<Rule> {
+    Ok(Rule {
+        id: r.get(0)?,
+        words: r.get(1)?,
+        feed_id: r.get(2)?,
+        folder_id: r.get(3)?,
+        enabled: r.get(4)?,
+    })
+}
+
+pub fn rules(conn: &Connection) -> DbResult<Vec<Rule>> {
+    let mut stmt = conn.prepare(&format!("SELECT {RULE_COLUMNS} FROM rules ORDER BY id"))?;
+    let rows = stmt.query_map([], rule_row)?;
+    rows.collect()
+}
+
+/// The rules on, that apply to the feed. None to a saved page's feed: those
+/// pages were picked by hand (docs/EXTENSION.md).
+fn rules_for_feed(conn: &Connection, feed_id: i64) -> DbResult<Vec<Rule>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RULE_COLUMNS} FROM rules
+         WHERE enabled = 1 AND action = 'read'
+           AND EXISTS (SELECT 1 FROM feeds f WHERE f.id = ?1 AND f.saved = 0
+                       AND (rules.feed_id = f.id OR rules.folder_id = f.folder_id
+                            OR (rules.feed_id IS NULL AND rules.folder_id IS NULL)))"
+    ))?;
+    let rows = stmt.query_map([feed_id], rule_row)?;
+    rows.collect()
+}
+
+pub fn add_rule(
+    conn: &Connection,
+    words: &str,
+    feed_id: Option<i64>,
+    folder_id: Option<i64>,
+) -> DbResult<Rule> {
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    conn.execute(
+        "INSERT INTO rules (words, feed_id, folder_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![words, feed_id, folder_id, now_ms()],
+    )?;
+    conn.query_row(
+        &format!("SELECT {RULE_COLUMNS} FROM rules WHERE id = ?1"),
+        [conn.last_insert_rowid()],
+        rule_row,
+    )
+}
+
+pub fn set_rule_enabled(conn: &Connection, id: i64, enabled: bool) -> DbResult<()> {
+    conn.execute(
+        "UPDATE rules SET enabled = ?2 WHERE id = ?1",
+        params![id, enabled],
+    )?;
+    Ok(())
+}
+
+pub fn delete_rule(conn: &Connection, id: i64) -> DbResult<()> {
+    conn.execute("DELETE FROM rules WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+/// The rule applied to the unread articles already there, as to new ones.
+/// Returns the ids it marked, for 元に戻す.
+pub fn apply_rule(conn: &mut Connection, rule: &Rule) -> DbResult<Vec<i64>> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.title, a.summary FROM articles a JOIN feeds f ON f.id = a.feed_id
+             WHERE a.read = 0 AND f.saved = 0
+               AND (?1 IS NULL OR a.feed_id = ?1) AND (?2 IS NULL OR f.folder_id = ?2)",
+        )?;
+        let rows = stmt.query_map(params![rule.feed_id, rule.folder_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut ids = Vec::new();
+        for row in rows {
+            let (id, title, summary) = row?;
+            if rule.matches(&title, &summary) {
+                ids.push(id);
+            }
+        }
+        ids
     };
     set_read(conn, &ids, true)?;
     Ok(ids)
@@ -1816,5 +1956,115 @@ mod tests {
             "<p>新しい本文</p>"
         );
         assert_eq!(sidebar(&conn).unwrap().later, 1);
+    }
+
+    fn read_of(conn: &Connection, guid: &str) -> (bool, Option<i64>) {
+        conn.query_row(
+            "SELECT read, full_status FROM articles WHERE guid = ?1",
+            [guid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rule_marks_new_articles_read() {
+        let mut conn = open_in_memory().unwrap();
+        let folder = create_folder(&conn, "技術").unwrap();
+        let tech = add_feed(&conn, "https://a.example/feed", "A", None, Some(folder)).unwrap();
+        let news = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
+        set_full_text(&conn, tech, true).unwrap();
+        add_rule(&conn, "  セール\tamazon ", None, Some(folder)).unwrap();
+        let off = add_rule(&conn, "日記", None, None).unwrap();
+        set_rule_enabled(&conn, off.id, false).unwrap();
+        assert_eq!(rules(&conn).unwrap()[0].words, "セール amazon");
+
+        let added = store_articles(
+            &mut conn,
+            tech,
+            &[
+                art("t1", "Amazon のセール", 1),
+                art("t2", "セールの話", 2),
+                art("t3", "日記", 3),
+            ],
+        )
+        .unwrap();
+        assert_eq!(added, 3);
+        // Every word, any case; not queued for 全文取得.
+        assert_eq!(read_of(&conn, "t1"), (true, None));
+        assert_eq!(read_of(&conn, "t2"), (false, Some(0)));
+        // A rule turned off does nothing.
+        assert_eq!(read_of(&conn, "t3"), (false, Some(0)));
+        // Outside the folder.
+        store_articles(&mut conn, news, &[art("n1", "AMAZON セール", 1)]).unwrap();
+        assert_eq!(read_of(&conn, "n1"), (false, None));
+
+        // Marked unread by hand, it stays so on the next refresh.
+        let t1 = article_id(&conn, "t1");
+        set_read(&mut conn, &[t1], false).unwrap();
+        store_articles(&mut conn, tech, &[art("t1", "Amazon のセール", 1)]).unwrap();
+        assert!(!read_of(&conn, "t1").0);
+    }
+
+    fn article_id(conn: &Connection, guid: &str) -> i64 {
+        conn.query_row("SELECT id FROM articles WHERE guid = ?1", [guid], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_new_rule_applies_to_the_unread_articles_there() {
+        let mut conn = open_in_memory().unwrap();
+        let a = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
+        let b = add_feed(&conn, "https://b.example/feed", "B", None, None).unwrap();
+        store_articles(
+            &mut conn,
+            a,
+            &[art("a1", "PR 記事", 1), art("a2", "本文", 2)],
+        )
+        .unwrap();
+        store_articles(&mut conn, b, &[art("b1", "pr 記事", 1)]).unwrap();
+        save_page(&mut conn, &art("https://saved.example/", "PR 記事", 3)).unwrap();
+        let in_a = add_rule(&conn, "pr", Some(a), None).unwrap();
+        assert_eq!(
+            apply_rule(&mut conn, &in_a).unwrap(),
+            [article_id(&conn, "a1")]
+        );
+        assert!(!read_of(&conn, "b1").0);
+
+        // All feeds, but not a page saved by hand; nothing twice.
+        let everywhere = add_rule(&conn, "PR", None, None).unwrap();
+        assert_eq!(
+            apply_rule(&mut conn, &everywhere).unwrap(),
+            [article_id(&conn, "b1")]
+        );
+    }
+
+    #[test]
+    fn rules_go_with_their_feed_or_folder() {
+        let conn = open_in_memory().unwrap();
+        let folder = create_folder(&conn, "F").unwrap();
+        let feed = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
+        add_rule(&conn, "x", Some(feed), None).unwrap();
+        add_rule(&conn, "y", None, Some(folder)).unwrap();
+        let all = add_rule(&conn, "z", None, None).unwrap();
+        delete_feed(&conn, feed).unwrap();
+        delete_folder(&conn, folder).unwrap();
+        assert_eq!(rules(&conn).unwrap(), std::slice::from_ref(&all));
+        delete_rule(&conn, all.id).unwrap();
+        assert!(rules(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_empty_rule_matches_nothing() {
+        let rule = Rule {
+            id: 1,
+            words: " ".into(),
+            feed_id: None,
+            folder_id: None,
+            enabled: true,
+        };
+        assert!(!rule.matches("何でも", ""));
     }
 }

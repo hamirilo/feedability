@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Settings,
   Star,
+  VolumeX,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -157,6 +158,20 @@ export const COMMANDS: Command[] = [
     run: (s) => {
       const id = openFeed(s);
       if (id !== null) void deleteFeed(id);
+    },
+  },
+  {
+    id: "feed.mute",
+    // The open feed or folder is picked as where it applies (docs/MUTE.md).
+    title: "ミュートする語句を追加…",
+    icon: VolumeX,
+    run: (s) => {
+      const feed = openFeed(s);
+      const folder = openFolder(s);
+      s.openSettings(
+        "mute",
+        feed !== null ? { kind: "feed", id: feed } : folder !== null ? { kind: "folder", id: folder } : { kind: "all" },
+      );
     },
   },
   {

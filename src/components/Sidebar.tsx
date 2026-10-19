@@ -197,6 +197,7 @@ export function Sidebar() {
         "sep",
         commandItem("feed.refresh"),
         commandItem("list.markAllRead"),
+        commandItem("feed.mute"),
         "sep",
         commandItem("feed.rename"),
         commandItem("feed.move"),
@@ -214,6 +215,7 @@ export function Sidebar() {
       items: [
         commandItem("folder.refresh"),
         commandItem("list.markAllRead"),
+        commandItem("feed.mute"),
         "sep",
         commandItem("folder.rename"),
         commandItem("folder.delete", true),
