@@ -3,10 +3,11 @@
  * (SettingsFrame.tsx, desktop-platform UI §9): pages on the left, sections
  * of rows on the right, saved as they change. ⌘, opens the page seen last.
  */
-import { Archive, BookOpen, Puzzle, Settings } from "lucide-react";
+import { Archive, BookOpen, Puzzle, Rss, Settings } from "lucide-react";
 import type { MarkReadOn, ThemeSetting } from "../lib/api";
 import { useStore, type SettingsPageId } from "../store";
 import { ExtensionSettings } from "./ExtensionSettings";
+import { FeedSettings } from "./FeedSettings";
 import { RadioRows, Row, Section, SettingsFrame, SwitchRow, type SettingsGroup } from "./SettingsFrame";
 import { StockroomSettings } from "./StockroomDialogs";
 import { UpdateSection } from "./UpdateSection";
@@ -15,6 +16,7 @@ const GROUPS: SettingsGroup<SettingsPageId>[] = [
   {
     pages: [
       { id: "general", label: "一般", icon: <Settings size={15} /> },
+      { id: "feeds", label: "フィード", icon: <Rss size={15} /> },
       { id: "reading", label: "記事", icon: <BookOpen size={15} /> },
       { id: "extension", label: "ブラウザ拡張", icon: <Puzzle size={15} /> },
       { id: "stockroom", label: "stockroom", icon: <Archive size={15} /> },
@@ -62,6 +64,7 @@ export function SettingsDialog({ page, onClose }: { page: SettingsPageId; onClos
   return (
     <SettingsFrame groups={GROUPS} page={page} onPage={openSettings} onClose={onClose}>
       {page === "general" && <GeneralPage />}
+      {page === "feeds" && <FeedSettings />}
       {page === "reading" && <ReadingPage />}
       {page === "extension" && <ExtensionSettings />}
       {page === "stockroom" && <StockroomSettings />}

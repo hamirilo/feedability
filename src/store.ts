@@ -61,14 +61,15 @@ export interface Toast extends Required<Pick<ToastOptions, "title" | "kind" | "d
 }
 
 /** The settings' pages (SettingsDialog.tsx); ⌘, opens the last one seen. */
-export type SettingsPageId = "general" | "reading" | "extension" | "stockroom";
-const SETTINGS_PAGES: SettingsPageId[] = ["general", "reading", "extension", "stockroom"];
+export type SettingsPageId = "general" | "feeds" | "reading" | "extension" | "stockroom";
+const SETTINGS_PAGES: SettingsPageId[] = ["general", "feeds", "reading", "extension", "stockroom"];
 
 export type Dialog =
   | { kind: "settings"; page: SettingsPageId }
   | { kind: "shortcuts" }
   /** `url`: filled in (a `feed:` link the OS handed over). */
-  | { kind: "addFeed"; url?: string }
+  /** `fromSettings`: opened from 設定 › フィード, and goes back there. */
+  | { kind: "addFeed"; url?: string; fromSettings?: boolean }
   | {
       kind: "prompt";
       title: string;

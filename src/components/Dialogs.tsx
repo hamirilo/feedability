@@ -22,7 +22,7 @@ export function Dialogs() {
     case "shortcuts":
       return <ShortcutHelp onClose={close} />;
     case "addFeed":
-      return <AddFeedDialog initialUrl={dialog.url} onClose={close} />;
+      return <AddFeedDialog initialUrl={dialog.url} onClose={dialog.fromSettings ? () => openSettings("feeds") : close} />;
     case "prompt":
       return <PromptDialog d={dialog} onClose={close} />;
     case "moveFeed":
