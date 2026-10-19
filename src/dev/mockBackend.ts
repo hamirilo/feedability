@@ -19,6 +19,7 @@ import type {
   Imported,
   OpenRequest,
   RefreshSummary,
+  Rule,
   Sidebar,
   StockroomChoices,
   StockroomStatus,
@@ -112,6 +113,19 @@ const stockroomStatus = (): StockroomStatus => ({
   tags: stockroom.tags,
 });
 const settings: AppSettings = { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open", uiScale: 100 };
+
+/** ミュート (db.rs `rules`). */
+const rules: Rule[] = [{ id: 1, words: "PR", feedId: null, folderId: null, enabled: true }];
+let ruleSeq = rules.length;
+/** db.rs `Rule::matches`. */
+const ruleMatches = (r: Rule, a: MockArticle) => {
+  const text = `${a.title}\n${a.summary}`.toLowerCase();
+  const words = r.words.toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every((w) => text.includes(w));
+};
+const inScope = (r: Rule, a: MockArticle) =>
+  (r.feedId === null || a.feedId === r.feedId) &&
+  (r.folderId === null || feeds.find((f) => f.id === a.feedId)?.folderId === r.folderId);
 
 const LOREM =
   "フィードリーダーは、購読したサイトの新しい記事をまとめて読むための道具です。サイトを一つずつ見に行かなくても、更新があったものだけが届きます。";
@@ -240,7 +254,10 @@ async function refresh(ids: number[] | null): Promise<RefreshSummary> {
       addArticle(f.id, Date.now(), articleSeq + 1);
       added++;
       f.fetchedAt = Date.now();
-      if (f.fullText) {
+      const fresh = articles[articles.length - 1];
+      // db.rs `store_articles`: muted, read and not queued for 全文取得.
+      if (rules.some((r) => r.enabled && inScope(r, fresh) && ruleMatches(r, fresh))) fresh.read = true;
+      else if (f.fullText) {
         // The pass after the refresh: the page arrives a moment later.
         const x = articles.find((y) => y.id === articleSeq)!;
         x.fullStatus = "queued";
@@ -373,6 +390,28 @@ async function handle(cmd: string, a: any): Promise<unknown> {
       for (const x of articles) if (a.ids.includes(x.id)) x.laterAt = a.later ? (x.laterAt ?? now) : null;
       return null;
     }
+    case "list_rules":
+      return rules.map((r) => ({ ...r }));
+    case "add_rule": {
+      const { words, feedId, folderId } = a as { words: string; feedId: number | null; folderId: number | null };
+      if (!words.trim()) throw "語句を入力してください";
+      const rule: Rule = { id: ++ruleSeq, words: words.trim().split(/\s+/).join(" "), feedId, folderId, enabled: true };
+      rules.push(rule);
+      const marked = articles.filter((a) => !a.read && inScope(rule, a) && ruleMatches(rule, a));
+      for (const a of marked) a.read = true;
+      return { rule, marked: marked.map((a) => a.id) };
+    }
+    case "set_rule_enabled": {
+      const { id, enabled } = a as { id: number; enabled: boolean };
+      const r = rules.find((x) => x.id === id);
+      if (r) r.enabled = enabled;
+      return null;
+    }
+    case "delete_rule": {
+      const i = rules.findIndex((x) => x.id === a.id);
+      if (i >= 0) rules.splice(i, 1);
+      return null;
+    }
     case "mark_all_read": {
       const changed = articles.filter((x) => !x.read && matches(x, a.query));
       for (const x of changed) x.read = true;
@@ -463,6 +502,7 @@ async function handle(cmd: string, a: any): Promise<unknown> {
     case "delete_feed":
       feeds.splice(feeds.findIndex((x) => x.id === a.id), 1);
       for (let i = articles.length - 1; i >= 0; i--) if (articles[i].feedId === a.id) articles.splice(i, 1);
+      for (let i = rules.length - 1; i >= 0; i--) if (rules[i].feedId === a.id) rules.splice(i, 1);
       return null;
     case "create_folder":
       if (!a.name.trim()) throw "フォルダの名前を入力してください";
@@ -475,6 +515,7 @@ async function handle(cmd: string, a: any): Promise<unknown> {
     case "delete_folder":
       folders.splice(folders.findIndex((x) => x.id === a.id), 1);
       for (const f of feeds) if (f.folderId === a.id) f.folderId = null;
+      for (let i = rules.length - 1; i >= 0; i--) if (rules[i].folderId === a.id) rules.splice(i, 1);
       return null;
     case "refresh_feeds":
       return refresh(a.ids);

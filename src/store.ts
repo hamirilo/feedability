@@ -15,6 +15,7 @@ import {
   type ArticleRow,
   type FeedRow,
   type RefreshProgress,
+  type Rule,
   type Sidebar,
   type View,
   type ExtensionPairRequest,
@@ -61,11 +62,15 @@ export interface Toast extends Required<Pick<ToastOptions, "title" | "kind" | "d
 }
 
 /** The settings' pages (SettingsDialog.tsx); ⌘, opens the last one seen. */
-export type SettingsPageId = "general" | "feeds" | "reading" | "extension" | "stockroom";
-const SETTINGS_PAGES: SettingsPageId[] = ["general", "feeds", "reading", "extension", "stockroom"];
+export type SettingsPageId = "general" | "feeds" | "reading" | "mute" | "extension" | "stockroom";
+const SETTINGS_PAGES: SettingsPageId[] = ["general", "feeds", "reading", "mute", "extension", "stockroom"];
+
+/** Where a ミュート rule applies (docs/MUTE.md). */
+export type MuteScope = { kind: "all" } | { kind: "feed"; id: number } | { kind: "folder"; id: number };
 
 export type Dialog =
-  | { kind: "settings"; page: SettingsPageId }
+  /** `muteScope`: 設定 › ミュート opened for this feed or folder (its menu). */
+  | { kind: "settings"; page: SettingsPageId; muteScope?: MuteScope }
   | { kind: "shortcuts" }
   /** `url`: filled in (a `feed:` link the OS handed over). */
   /** `fromSettings`: opened from 設定 › フィード, and goes back there. */
@@ -236,7 +241,9 @@ export interface State {
   /** The settings page seen last. */
   settingsPage: SettingsPageId;
   /** ⌘, and the menu: the page seen last; a page: that one (and remembered). */
-  openSettings: (page?: SettingsPageId) => void;
+  openSettings: (page?: SettingsPageId, muteScope?: MuteScope) => void;
+  /** A ミュート rule; the unread articles it marks at once get a toast with 元に戻す. */
+  addRule: (words: string, scope: MuteScope) => Promise<Rule | null>;
   openDialog: (d: Dialog) => void;
   closeDialog: () => void;
   setExtensionPair: (r: ExtensionPairRequest | null) => void;
@@ -734,10 +741,27 @@ export const useStore = create<State>((set, get) => {
       if (get().refreshing) set({ refreshing });
     },
     setUpdating: (updating) => set({ updating }),
-    openSettings: (page) => {
+    openSettings: (page, muteScope) => {
       const p = page ?? get().settingsPage;
-      set({ dialog: { kind: "settings", page: p }, settingsPage: p });
+      set({ dialog: { kind: "settings", page: p, muteScope }, settingsPage: p });
       savePrefsNow();
+    },
+    addRule: async (words, scope) => {
+      try {
+        const { rule, marked } = await api.addRule(
+          words,
+          scope.kind === "feed" ? scope.id : null,
+          scope.kind === "folder" ? scope.id : null,
+        );
+        if (marked.length) {
+          await announceRead(marked);
+          void get().reload();
+        }
+        return rule;
+      } catch (e) {
+        fail(e);
+        return null;
+      }
     },
     openDialog: (dialog) => set({ dialog }),
     closeDialog: () => set({ dialog: null }),
