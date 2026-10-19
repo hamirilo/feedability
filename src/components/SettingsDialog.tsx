@@ -28,6 +28,9 @@ const THEMES: { value: ThemeSetting; label: string; hint?: string }[] = [
   { value: "dark", label: "ダーク" },
 ];
 
+/** 表示の大きさ (docs/UI_SCALE.md); within commands.rs UI_SCALE_MIN..MAX. */
+const UI_SCALES = [80, 90, 100, 110, 125, 150];
+
 const MARK_READ: { value: MarkReadOn; label: string; hint?: string }[] = [
   { value: "open", label: "開いたとき" },
   { value: "delay", label: "開いて 2 秒後", hint: "J / K で通り過ぎた記事は未読のまま残ります" },
@@ -78,6 +81,21 @@ function GeneralPage() {
           options={THEMES}
           onChange={(theme) => void setSettings({ ...settings, theme })}
         />
+        <Row label="表示の大きさ" hint="サイドバー・一覧・本文など、画面全体の文字と部品の大きさ。本文の文字だけを変えるときは本文の上の「Aa」">
+          <select
+            className={select}
+            aria-label="表示の大きさ"
+            value={settings.uiScale}
+            onChange={(e) => void setSettings({ ...settings, uiScale: Number(e.target.value) })}
+          >
+            {/* A hand-edited value between the steps still shows. */}
+            {(UI_SCALES.includes(settings.uiScale) ? UI_SCALES : [...UI_SCALES, settings.uiScale].sort((a, b) => a - b)).map((v) => (
+              <option key={v} value={v}>
+                {v} %{v === 100 ? "（標準）" : ""}
+              </option>
+            ))}
+          </select>
+        </Row>
       </Section>
       <Section title="フィード">
         <Row label="フィードの更新" hint="アプリを開いている間、この間隔ですべてのフィードを更新します">

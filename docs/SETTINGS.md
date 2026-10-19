@@ -24,6 +24,7 @@ desktop-platform の Architecture §5 の 3 層のうち、「アプリ全体」
 | 項目 | キー | 既定 | 選択肢 |
 |---|---|---|---|
 | 外観 | `theme` | `system` | OS に合わせる（`system`）/ ライト / ダーク（[THEME.md](THEME.md)） |
+| 表示の大きさ | `uiScale` | 100 | 80 / 90 / 100 / 110 / 125 / 150 %（[UI_SCALE.md](UI_SCALE.md)） |
 | フィードの更新 | `refreshMinutes` | 30 | 自動では更新しない（0）/ 15 / 30 / 60 / 180 分 |
 | 既読の記事を残す期間 | `keepDays` | 30 | 7 / 30 / 90 / 365 日 / 削除しない（0） |
 | 記事を既読にする | `markReadOn` | `open` | 開いたとき（`open`）/ 開いて 2 秒後（`delay`）/ 自分で既読にする（`manual`、M のみ）（[READING.md](READING.md)） |

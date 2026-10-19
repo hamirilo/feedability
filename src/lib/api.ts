@@ -179,6 +179,8 @@ export interface AppSettings {
   nextFeedAfterReadAll: boolean;
   /** When opening an article marks it read. */
   markReadOn: MarkReadOn;
+  /** 表示の大きさ: the whole page's zoom in percent (docs/UI_SCALE.md). */
+  uiScale: number;
 }
 
 export interface Added {

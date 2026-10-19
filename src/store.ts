@@ -31,7 +31,7 @@ import {
   TEXT_WIDTHS,
   validStep,
 } from "./lib/reading";
-import { applyTheme } from "./lib/theme";
+import { applyTheme, applyUiScale } from "./lib/theme";
 
 export interface ToastAction {
   label: string;
@@ -374,7 +374,7 @@ export const useStore = create<State>((set, get) => {
     selectedId: null,
     article: null,
     collapsed: new Set(prefs.collapsed),
-    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open" },
+    settings: { autoUpdate: true, refreshMinutes: 30, keepDays: 30, theme: "system", nextFeedAfterReadAll: false, markReadOn: "open", uiScale: 100 },
     icons: {},
     refreshing: null,
     updating: null,
@@ -387,6 +387,7 @@ export const useStore = create<State>((set, get) => {
         const settings = await api.getAppSettings();
         set({ settings });
         applyTheme(settings.theme);
+        applyUiScale(settings.uiScale);
       } catch (e) {
         warn("settings", e);
       }
@@ -721,6 +722,7 @@ export const useStore = create<State>((set, get) => {
         const settings = await api.setAppSettings(s);
         set({ settings });
         applyTheme(settings.theme);
+        applyUiScale(settings.uiScale);
       } catch (e) {
         fail(e);
       }
