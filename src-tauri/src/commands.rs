@@ -583,6 +583,8 @@ fn host_of(url: &str) -> String {
 
 /// The feed at `url`, or the first feed its page links to.
 async fn fetch_feed_or_page(url: &str) -> CmdResult<(String, fetch::Response, feed::ParsedFeed)> {
+    let youtube = feed::youtube_feed(url);
+    let url = youtube.as_deref().unwrap_or(url);
     let res = match fetch::get(url, None, None, fetch::FEED_ACCEPT, fetch::MAX_FEED_BYTES).await? {
         Outcome::Fetched(r) => r,
         Outcome::NotModified => return Err("取得できませんでした（HTTP 304）".into()),
@@ -593,10 +595,15 @@ async fn fetch_feed_or_page(url: &str) -> CmdResult<(String, fetch::Response, fe
             if !feed::looks_like_html(&res.body) {
                 return Err(parse_error);
             }
-            let candidates = feed::discover(&res.body, &res.url);
-            let first = candidates
-                .first()
-                .ok_or("このページにはフィードが見つかりませんでした")?;
+            let mut candidates = feed::discover(&res.body, &res.url);
+            candidates.extend(feed::youtube_feed_in_page(&res.body, &res.url));
+            let first = candidates.first().ok_or_else(|| {
+                if res.url.contains("youtube.com/") {
+                    "このページにはフィードが見つかりませんでした。YouTube のチャンネルは、チャンネルの URL（https://www.youtube.com/channel/UC…）でも追加できます"
+                } else {
+                    "このページにはフィードが見つかりませんでした"
+                }
+            })?;
             let res = match fetch::get(first, None, None, fetch::FEED_ACCEPT, fetch::MAX_FEED_BYTES)
                 .await?
             {
