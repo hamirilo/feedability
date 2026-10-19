@@ -254,3 +254,8 @@ textarea {
   border: none;
   border-top: 1px solid var(--color-line);
 }
+
+/* A feed being dragged onto a folder (Sidebar.tsx): the hand over everything. */
+:root[data-dragging] * {
+  cursor: grabbing !important;
+}
