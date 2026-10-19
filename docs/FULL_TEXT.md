@@ -15,7 +15,9 @@ crate の比較は [research/readability.md](research/readability.md)。
 
 ## 動き
 
-- フィードごとのオン / オフ。既定はオフ。切り替えるのは 3 か所：フィードの右クリック「全文を取得する / 全文の取得をやめる」、メニューの フィード › 同じ項目（チェック付き）、フィードの情報（⌘I）のチェックボックス「記事のページから本文を取得する」。コマンド表の `feed.fullText`。ブラウザ拡張から購読するときは、ポップアップの「購読するとき全文取得もオンにする」で最初からオンにできる（[EXTENSION.md](EXTENSION.md)）
+- フィードごとのオン / オフ。既定はオフ。切り替えるのは設定の中の 2 か所：**フィードの情報と設定（⌘I）の「設定」の欄** のチェックボックス「記事のページから本文を取得する」と、**設定（⌘,）› フィード** の一覧の行ごとのスイッチ（選んだフィードをまとめてオン / オフもできる。[SETTINGS.md](SETTINGS.md)）
+  - 右クリックとメニューバーには置かない（2026-10-19 に外した）。メニューは「今すること」（更新・既読・名前の変更…）の並びで、そこにオン / オフの切り替えが混ざると、押すと何かが起きるのか設定が変わるのか分かりにくかった。設定はフィードの情報と設定の中にまとめ、情報の欄とは見出しで分ける
+  - ブラウザ拡張から購読するときは、ポップアップの「購読するとき全文取得もオンにする」で最初からオンにできる（[EXTENSION.md](EXTENSION.md)）
 - オンのフィードは、更新で **新しく保存した記事** の記事のページを、更新のあとに裏で取る（アイコンと同じく、更新の終わりを待たせない）。本文を抜き出して `articles.full_content` に入れ、表示するときは今の本文と同じく `sanitize::article_html` を通す（相対リンクの基準は記事の URL）
 - 1 回の更新で 1 つのフィードから取るのは新しいほうから 20 件まで（`FULL_PER_FEED`）。それより古い新着は、開いたときに取る
 - オンにしたとき、すでにある記事は取りに行かない。開いたときに、その 1 件だけ取る
@@ -52,4 +54,4 @@ crate の比較は [research/readability.md](research/readability.md)。
 - `src-tauri/src/fetch.rs`：`get_page`、`is_local`
 - `src-tauri/src/db.rs`：`set_full_text`、`take_full_queue`、`set_full_content`。`FeedRow` / `FeedInfo` / `ArticleFull` に `full_text` など
 - `src-tauri/src/commands.rs`：`set_feed_full_text`、`fetch_full_text`（開いたとき）、更新のあとの `spawn_full_text_pass`。取れた記事ごとに `full-text` のイベント（記事の id）を出す。`Article.fullText` は `"feed"`・`"page"`・`"pending"`
-- フロント：`store.ts` の `toggleFullText`・`loadFullText`（開いた記事が `pending` なら取る、`full-text` が届いたら読み直す）、`Reader.tsx` の 1 行、`FeedInfoDialog.tsx` のチェックボックス。モック（`src/dev/mockBackend.ts`）は「世界のニュース」がオンで、id が偶数の記事は取得に失敗する
+- フロント：`store.ts` の `toggleFullText`・`loadFullText`（開いた記事が `pending` なら取る、`full-text` が届いたら読み直す）、`Reader.tsx` の 1 行、`FeedInfoDialog.tsx` の「設定」の欄のチェックボックス。モック（`src/dev/mockBackend.ts`）は「世界のニュース」がオンで、id が偶数の記事は取得に失敗する

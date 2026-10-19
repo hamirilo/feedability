@@ -58,6 +58,41 @@ async function loadImages(root: HTMLElement, cancelled: () => boolean) {
   await Promise.all([worker(), worker(), worker(), worker()]);
 }
 
+/**
+ * The same picture by file, whatever size the site asked for: WordPress
+ * names its sizes `photo-1024x576.png` next to `photo.png`. The query is
+ * kept: some sites tell their pictures apart only by it.
+ */
+function imageKey(src: string): string {
+  return src.replace(/#.*$/, "").replace(/-\d+x\d+(\.\w+)(\?|$)/, "$1$2");
+}
+
+/**
+ * Drops an image already shown higher up. Some feeds put the post's featured
+ * image before a body that opens with the same picture (kachibito.net), so it
+ * shows twice. Only a picture on its own goes: an emoji repeated in a
+ * sentence stays. A wrapper left empty (`<p>`, `<a>`, `<figure>`) goes too.
+ */
+function dropRepeatedImages(doc: Document) {
+  const seen = new Set<string>();
+  for (const img of doc.querySelectorAll<HTMLImageElement>("img[data-src]")) {
+    const key = imageKey(img.dataset.src!);
+    const repeated = seen.has(key);
+    seen.add(key);
+    if (!repeated || img.parentElement?.textContent?.trim()) continue;
+    let node: Element = img;
+    while (
+      node.parentElement &&
+      node.parentElement !== doc.body &&
+      node.parentElement.childElementCount === 1 &&
+      !node.parentElement.textContent?.trim()
+    ) {
+      node = node.parentElement;
+    }
+    node.remove();
+  }
+}
+
 function Body({ html }: { html: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -70,6 +105,7 @@ function Body({ html }: { html: string }) {
       if (src && /^https?:/i.test(src)) img.dataset.src = src;
       else img.remove();
     }
+    dropRepeatedImages(doc);
     root.replaceChildren(...doc.body.childNodes);
     let stop = false;
     void loadImages(root, () => stop);

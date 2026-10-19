@@ -112,6 +112,67 @@ export async function deleteFeed(id: number) {
   }
 }
 
+// ------------------------------------------------- several feeds at once
+// The feed list of the settings (docs/SETTINGS.md › フィード). One command per
+// feed, then the sidebar once; what was done goes in one toast.
+
+const feedNames = (ids: number[]) => {
+  const feeds = st().sidebar.feeds.filter((f) => ids.includes(f.id));
+  return feeds.length === 1 ? `「${feeds[0].title}」` : `${feeds.length} 件のフィード`;
+};
+
+export async function setFullTextMany(ids: number[], on: boolean) {
+  try {
+    for (const id of ids) await api.setFeedFullText(id, on);
+  } catch (e) {
+    fail(e);
+  }
+  await st().reloadSidebar();
+  st().toast(`${feedNames(ids)}の全文取得を${on ? "オン" : "オフ"}にしました`);
+}
+
+export async function moveFeeds(ids: number[], folderId: number | null) {
+  const names = feedNames(ids);
+  try {
+    for (const id of ids) await api.moveFeed(id, folderId);
+  } catch (e) {
+    fail(e);
+  }
+  await st().reloadSidebar();
+  void st().reload();
+  const folder = st().sidebar.folders.find((f) => f.id === folderId)?.name;
+  st().toast(folder ? `${names}を「${folder}」へ移動しました` : `${names}をフォルダの外へ出しました`);
+}
+
+/** Asked first, as for one feed. Returns whether they went. */
+export async function deleteFeeds(ids: number[]): Promise<boolean> {
+  if (ids.length === 1) {
+    const before = st().sidebar.feeds.length;
+    await deleteFeed(ids[0]);
+    return st().sidebar.feeds.length < before;
+  }
+  const ok = await ask(`${ids.length} 件のフィードの購読をやめますか？\n\nこれらのフィードの記事は、スター付きのものも含めて削除されます。`, {
+    title: "購読をやめる",
+    kind: "warning",
+    okLabel: "購読をやめる",
+    cancelLabel: "キャンセル",
+  });
+  if (!ok) return false;
+  let done = 0;
+  try {
+    for (const id of ids) {
+      await api.deleteFeed(id);
+      done++;
+    }
+  } catch (e) {
+    fail(e);
+  }
+  await st().reloadSidebar();
+  void st().reload();
+  if (done) st().toast(`${done} 件のフィードの購読をやめました`);
+  return done > 0;
+}
+
 /** The folder only; its feeds move to the top level. */
 export async function deleteFolder(id: number) {
   const folder = st().sidebar.folders.find((f) => f.id === id);

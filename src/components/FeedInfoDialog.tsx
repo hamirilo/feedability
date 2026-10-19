@@ -1,7 +1,9 @@
 /**
- * ⌘I : a feed's information and its URL (docs/FEED_INFO.md). The URL can be
- * changed here: the new address is checked first (a page that names its feed
- * works too), and the reason it was refused shows under the field.
+ * ⌘I : a feed's information, its URL and its settings (docs/FEED_INFO.md).
+ * The URL can be changed here: the new address is checked first (a page that
+ * names its feed works too), and the reason it was refused shows under the
+ * field. The settings (全文取得) are only here, apart from the information:
+ * the menus hold actions, not switches.
  */
 import { useEffect, useState } from "react";
 import { changeFeedUrl, openInBrowser } from "../lib/actions";
@@ -57,7 +59,7 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
 
   const folder = info?.folderId != null ? folders.find((f) => f.id === info.folderId)?.name : null;
   return (
-    <Modal title="フィードの情報" onClose={onClose} width={520}>
+    <Modal title="フィードの情報と設定" onClose={onClose} width={520}>
       <form onSubmit={onSubmit} onKeyDown={onKeyDown} className="pb-1">
         <label className={`mb-1.5 block ${LABEL}`} htmlFor="feed-url">
           URL
@@ -113,6 +115,15 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
             <Row label="記事">
               {info.articles} 件（未読 {info.unread} 件）
             </Row>
+          </div>
+          {info.error && (
+            <div className="mt-3 rounded-md border border-danger/40 bg-danger/10 p-3 text-xs">
+              <div className="font-semibold text-danger">更新できませんでした</div>
+              <p className="mt-1 break-words whitespace-pre-wrap text-fg select-text">{info.error}</p>
+            </div>
+          )}
+          <h3 className="mt-4 mb-1.5 text-xs font-semibold text-dim">設定</h3>
+          <div className="rounded-lg border border-line bg-bg/60 px-3">
             <Row label="全文取得">
               <label className="flex items-start gap-2">
                 <input type="checkbox" className="mt-1" checked={fullText} onChange={() => void toggleFullText(feedId)} />
@@ -123,12 +134,6 @@ export function FeedInfoDialog({ feedId, onClose }: { feedId: number; onClose: (
               </label>
             </Row>
           </div>
-          {info.error && (
-            <div className="mt-3 rounded-md border border-danger/40 bg-danger/10 p-3 text-xs">
-              <div className="font-semibold text-danger">更新できませんでした</div>
-              <p className="mt-1 break-words whitespace-pre-wrap text-fg select-text">{info.error}</p>
-            </div>
-          )}
         </>
       )}
       <div className="mt-4 flex justify-end">

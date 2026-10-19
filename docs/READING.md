@@ -19,10 +19,14 @@
   - `delay`（開いて 2 秒後）：2 秒たっても同じ記事が開いていれば既読にする。別の記事を開く・表示を切り替える・記事を閉じる・M で自分で切り替える、のどれかでタイマーは取り消す。J / K で通り過ぎた記事は未読のまま残る
   - `manual`（自分で既読にする）：M、ボタン、メニュー、「ここより上 / 下を既読」「すべて既読」だけ
   - `delay` / `manual` では、開いている記事が未読のことがある（意図した動き）。次の未読（N）、ここより上 / 下を既読にする、未読のみ表示でも開いている記事を一覧に残す（`keep`）、Space で最後まで来たら次の記事、は今のまま働く
+- **同じ画像を二度出さない**：フィードによっては、本文の先頭にアイキャッチ画像を足し、そのあとの本文も同じ画像で始まる（kachibito.net）。本文の中で、上にすでに出た画像と同じものは 2 つ目以降を出さない
+  - 同じかどうかは URL で見る。`#` 以降は無視し、WordPress の大きさ違い（`photo-1024x576.png` と `photo.png`）は同じとみなす。`?` 以降は残す（`?id=` だけで別の画像を区別するサイトがある）
+  - 消すのは単独で置かれた画像だけ。文の中の画像（絵文字など）は繰り返しでも残す。画像を消して空になった囲み（`<p>`・`<a>`・`<figure>`）も消す
 
 ## 実装
 
 - フロント：`lib/reading.ts`（段階の値と検証）、`store.ts` の `textSize` / `lineHeight` / `textWidth` と `setTextSize` ほか、`Reader.tsx` の `DisplayButton`。本文は `<article>` に `--article-size` / `--article-leading` を置き、`index.css` の `.article` がそれを読む
 - コマンド表：`view.textBigger`（`Mod+Plus`）、`view.textSmaller`（`Mod+Minus`）、`view.textReset`（`Mod+0`）。`commands.ts` の `keyMatches` に `Plus` / `Minus`、`menuBar.ts` の `accelerator` に `Equal` / `Minus` への対応を足した
+- 画像の重複：`Reader.tsx` の `dropRepeatedImages`（`imageKey` で同じ画像を判定）。画像を取りに行く前に消すので、取得の数も増えない
 - 既読：`store.ts` の `select` が `markReadOn` を見る。タイマーはモジュールの `readTimer`（`finishOnLeave` と同じ作り）。発火したとき `selectedId` が同じでなければ何もしない
 - Rust：`AppSettings.mark_read_on`（`MarkReadOn`、`#[serde(default)]` なので古い `settings.json` は `open`）。テストは `commands.rs` 末尾
