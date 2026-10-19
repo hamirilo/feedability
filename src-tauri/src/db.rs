@@ -15,7 +15,7 @@ pub type DbResult<T> = rusqlite::Result<T>;
 
 /// The schema version in `PRAGMA user_version`. Add to `migrate` in steps;
 /// an older app opening a newer file must still be able to read it.
-const VERSION: i64 = 7;
+const VERSION: i64 = 8;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -41,7 +41,12 @@ pub fn open_in_memory() -> DbResult<Connection> {
 
 fn setup(conn: &Connection) -> DbResult<()> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    migrate(conn)
+    migrate(conn)?;
+    let indexed = index_missing(conn)?;
+    if indexed > 0 {
+        log::info!("indexed {indexed} articles for the search");
+    }
+    Ok(())
 }
 
 /// Everything written back into feedability.db and the WAL emptied, so the
@@ -184,6 +189,22 @@ fn migrate(conn: &Connection) -> DbResult<()> {
                enabled INTEGER NOT NULL DEFAULT 1,
                created_at INTEGER NOT NULL
              );
+             COMMIT;",
+        )?;
+    }
+    if version < 8 {
+        // The search (docs/SEARCH.md): each article's title, summary and text
+        // without the HTML, by trigram so that Japanese, with no spaces
+        // between words, is found inside a run of text. Rust fills it
+        // (`index_articles`; `index_missing` for the articles already there).
+        // An older app's deletes keep it right through the trigger; what it
+        // adds is indexed when this app next opens the file.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(title, summary, body, tokenize = 'trigram');
+             CREATE TRIGGER IF NOT EXISTS articles_fts_delete AFTER DELETE ON articles BEGIN
+               DELETE FROM articles_fts WHERE rowid = old.id;
+             END;
              COMMIT;",
         )?;
     }
@@ -639,7 +660,9 @@ pub fn store_articles(
     let mut added = 0;
     {
         let rules = rules_for_feed(&tx, feed_id)?;
-        let mut exists = tx.prepare("SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2")?;
+        let mut exists = tx.prepare(
+            "SELECT id, title, summary, content FROM articles WHERE feed_id = ?1 AND guid = ?2",
+        )?;
         let mut insert = tx.prepare(
             "INSERT INTO articles (feed_id, guid, url, title, author, summary, content, published, added_at, seen_at, thumb_url,
                                    read, full_status)
@@ -651,12 +674,21 @@ pub fn store_articles(
                                  thumb_url = ?8
              WHERE id = ?1",
         )?;
+        // New, or with other words: into the search index.
+        let mut changed = Vec::new();
         for a in articles {
-            let id: Option<i64> = exists
-                .query_row(params![feed_id, a.guid], |r| r.get(0))
+            let found: Option<(i64, String, String, String)> = exists
+                .query_row(params![feed_id, a.guid], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
                 .optional()?;
-            match id {
-                Some(id) => {
+            match found {
+                Some((id, title, summary, content)) => {
+                    if (title, summary, content)
+                        != (a.title.clone(), a.summary.clone(), a.content.clone())
+                    {
+                        changed.push(id);
+                    }
                     update.execute(params![
                         id,
                         a.url,
@@ -686,10 +718,12 @@ pub fn store_articles(
                         a.thumb_url,
                         muted
                     ])?;
+                    changed.push(tx.last_insert_rowid());
                     added += 1;
                 }
             }
         }
+        index_articles(&tx, &changed)?;
     }
     tx.commit()?;
     Ok(added)
@@ -788,20 +822,41 @@ fn filter(q: &ArticleQuery) -> (String, Vec<rusqlite::types::Value>) {
             args.push(Value::Integer(id));
         }
     }
-    for word in q.search.split_whitespace() {
-        let pattern = format!(
-            "%{}%",
-            word.replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
-        clauses.push(
-            "(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR COALESCE(f.custom_title, f.title) LIKE ? ESCAPE '\\')"
-                .into(),
-        );
-        for _ in 0..3 {
-            args.push(Value::Text(pattern.clone()));
+    // docs/SEARCH.md. A word of 3 characters or more is looked up in the
+    // index; a shorter one, which a trigram can't find, is looked for in the
+    // index's text. The feed's name counts too.
+    let groups = crate::search::parse(&q.search);
+    if !groups.is_empty() {
+        let mut alternatives = Vec::new();
+        for group in groups {
+            let mut terms = Vec::new();
+            for term in group {
+                let like = format!("%{}%", escape_like(&term.text));
+                let in_text = if term.text.chars().count() >= 3 {
+                    args.push(Value::Text(format!(
+                        "\"{}\"",
+                        term.text.replace('"', "\"\"")
+                    )));
+                    "a.id IN (SELECT rowid FROM articles_fts WHERE articles_fts MATCH ?)"
+                } else {
+                    for _ in 0..3 {
+                        args.push(Value::Text(like.clone()));
+                    }
+                    "a.id IN (SELECT rowid FROM articles_fts
+                              WHERE title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')"
+                };
+                args.push(Value::Text(like));
+                let clause =
+                    format!("({in_text} OR COALESCE(f.custom_title, f.title) LIKE ? ESCAPE '\\')");
+                terms.push(if term.negated {
+                    format!("NOT {clause}")
+                } else {
+                    clause
+                });
+            }
+            alternatives.push(format!("({})", terms.join(" AND ")));
         }
+        clauses.push(format!("({})", alternatives.join(" OR ")));
     }
     let sql = if clauses.is_empty() {
         "1".to_string()
@@ -809,6 +864,59 @@ fn filter(q: &ArticleQuery) -> (String, Vec<rusqlite::types::Value>) {
         clauses.join(" AND ")
     };
     (sql, args)
+}
+
+/// LIKE's wildcards in `s` taken literally (with `ESCAPE '\\'`).
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// The search index (`articles_fts`, docs/SEARCH.md) for these articles,
+/// anew: their title, summary and text without the HTML (the page's, once
+/// 全文取得 has it).
+fn index_articles(conn: &Connection, ids: &[i64]) -> DbResult<()> {
+    let mut get = conn.prepare_cached(
+        "SELECT title, summary, COALESCE(full_content, content) FROM articles WHERE id = ?1",
+    )?;
+    let mut delete = conn.prepare_cached("DELETE FROM articles_fts WHERE rowid = ?1")?;
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO articles_fts (rowid, title, summary, body) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for &id in ids {
+        delete.execute([id])?;
+        let row = get
+            .query_row([id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .optional()?;
+        if let Some((title, summary, html)) = row {
+            insert.execute(params![id, title, summary, crate::feed::plain_text(&html)])?;
+        }
+    }
+    Ok(())
+}
+
+/// The articles not in the search index: every one, once, after the upgrade
+/// to v8, and those an older app added since. Returns how many.
+fn index_missing(conn: &Connection) -> DbResult<usize> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM articles WHERE id NOT IN (SELECT rowid FROM articles_fts)")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<DbResult<_>>()?
+    };
+    if !ids.is_empty() {
+        let tx = conn.unchecked_transaction()?;
+        index_articles(&tx, &ids)?;
+        tx.commit()?;
+    }
+    Ok(ids.len())
 }
 
 pub fn query_articles(conn: &Connection, q: &ArticleQuery) -> DbResult<Vec<ArticleRow>> {
@@ -1033,10 +1141,15 @@ pub fn take_full_queue(conn: &mut Connection, per_feed: usize) -> DbResult<Vec<F
 /// come yet, so the one that failed can't undo the one that worked.
 pub fn set_full_content(conn: &Connection, id: i64, content: Option<&str>) -> DbResult<()> {
     match content {
-        Some(c) => conn.execute(
-            "UPDATE articles SET full_content = ?2, full_status = ?3 WHERE id = ?1",
-            params![id, c, FullStatus::Fetched as i64],
-        )?,
+        Some(c) => {
+            conn.execute(
+                "UPDATE articles SET full_content = ?2, full_status = ?3 WHERE id = ?1",
+                params![id, c, FullStatus::Fetched as i64],
+            )?;
+            // The page's text is what the search looks in from now on.
+            index_articles(conn, &[id])?;
+            1
+        }
         None => conn.execute(
             "UPDATE articles SET full_status = ?2
              WHERE id = ?1 AND (full_status IS NULL OR full_status = ?3)",
@@ -2066,5 +2179,100 @@ mod tests {
             enabled: true,
         };
         assert!(!rule.matches("何でも", ""));
+    }
+
+    #[test]
+    fn the_search_looks_in_the_text() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://a.example/feed", "Blog", None, None).unwrap();
+        let with = |guid: &str, title: &str, body: &str| NewArticle {
+            content: body.into(),
+            summary: String::new(),
+            ..art(guid, title, 1)
+        };
+        store_articles(
+            &mut conn,
+            feed,
+            &[
+                with(
+                    "1",
+                    "お知らせ",
+                    "<p>新しい<b>バージョン</b>を公開しました。Tauri 2 対応</p>",
+                ),
+                with("2", "日記", "<p>今日は東京で雨。</p>"),
+                with("3", "Release notes", "<p>Bug fixes &amp; tauri updates</p>"),
+            ],
+        )
+        .unwrap();
+        let found = |conn: &Connection, search: &str| -> Vec<String> {
+            let q = ArticleQuery {
+                search: search.into(),
+                ..all()
+            };
+            let mut t: Vec<String> = query_articles(conn, &q)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.title)
+                .collect();
+            t.sort();
+            t
+        };
+        // Inside a run of Japanese, across the tags, any case.
+        assert_eq!(found(&conn, "バージョン"), ["お知らせ"]);
+        assert_eq!(found(&conn, "TAURI"), ["Release notes", "お知らせ"]);
+        // Shorter than a trigram.
+        assert_eq!(found(&conn, "東京"), ["日記"]);
+        assert_eq!(found(&conn, "雨"), ["日記"]);
+        // A phrase, a word left out, either of two.
+        assert_eq!(found(&conn, r#""tauri 2""#), ["お知らせ"]);
+        assert_eq!(found(&conn, "tauri -公開"), ["Release notes"]);
+        assert_eq!(found(&conn, "東京 OR fixes"), ["Release notes", "日記"]);
+        // The feed's name still counts; quotes in a word are only text.
+        assert_eq!(found(&conn, "blog 雨").len(), 1);
+        assert!(found(&conn, r#"a"b"c"#).is_empty());
+
+        // The page's text once 全文取得 has it; a changed article anew.
+        let id = query_articles(
+            &conn,
+            &ArticleQuery {
+                search: "日記".into(),
+                ..all()
+            },
+        )
+        .unwrap()[0]
+            .id;
+        set_full_content(&conn, id, Some("<p>晴れのち曇り</p>")).unwrap();
+        assert_eq!(found(&conn, "晴れのち"), ["日記"]);
+        assert!(found(&conn, "東京").is_empty());
+        store_articles(
+            &mut conn,
+            feed,
+            &[with("3", "Release notes", "<p>Only docs</p>")],
+        )
+        .unwrap();
+        assert!(found(&conn, "fixes").is_empty());
+
+        // Gone from the index with the article.
+        delete_feed(&conn, feed).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM articles_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn articles_missing_from_the_index_are_added() {
+        let mut conn = open_in_memory().unwrap();
+        let feed = add_feed(&conn, "https://a.example/feed", "A", None, None).unwrap();
+        store_articles(&mut conn, feed, &[art("1", "検索できる記事", 1)]).unwrap();
+        // As after the upgrade to v8, or an older app's refresh.
+        conn.execute("DELETE FROM articles_fts", []).unwrap();
+        assert_eq!(index_missing(&conn).unwrap(), 1);
+        assert_eq!(index_missing(&conn).unwrap(), 0);
+        let q = ArticleQuery {
+            search: "できる".into(),
+            ..all()
+        };
+        assert_eq!(query_articles(&conn, &q).unwrap().len(), 1);
     }
 }

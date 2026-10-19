@@ -187,6 +187,7 @@ function SearchField() {
           }
         }}
         placeholder="検索"
+        title={'タイトル・本文・フィード名から探します\n空白で区切る：すべてを含む\n"語句"：ひとかたまりで\n-語：含まない\nA OR B：どちらか'}
         spellCheck={false}
         className="w-full rounded-md border border-line bg-bg py-1 pr-6 pl-7 text-[13px] outline-none focus:border-accent"
       />
