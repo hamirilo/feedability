@@ -455,6 +455,51 @@ pub async fn mark_all_read(state: State<'_, AppState>, query: ArticleQuery) -> C
     with_db(&state, |c| db::mark_all_read(c, &query))
 }
 
+/// ミュート (docs/MUTE.md).
+#[tauri::command]
+pub async fn list_rules(state: State<'_, AppState>) -> CmdResult<Vec<db::Rule>> {
+    with_db(&state, |c| db::rules(c))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedRule {
+    rule: db::Rule,
+    /// The unread articles it marked read, for 元に戻す.
+    marked: Vec<i64>,
+}
+
+/// A new rule, applied at once to the unread articles already there.
+#[tauri::command]
+pub async fn add_rule(
+    state: State<'_, AppState>,
+    words: String,
+    feed_id: Option<i64>,
+    folder_id: Option<i64>,
+) -> CmdResult<AddedRule> {
+    if words.trim().is_empty() {
+        return Err("語句を入力してください".into());
+    }
+    if feed_id.is_some() && folder_id.is_some() {
+        return Err("フィードかフォルダのどちらかを選んでください".into());
+    }
+    with_db(&state, |c| {
+        let rule = db::add_rule(c, &words, feed_id, folder_id)?;
+        let marked = db::apply_rule(c, &rule)?;
+        Ok(AddedRule { rule, marked })
+    })
+}
+
+#[tauri::command]
+pub async fn set_rule_enabled(state: State<'_, AppState>, id: i64, enabled: bool) -> CmdResult<()> {
+    with_db(&state, |c| db::set_rule_enabled(c, id, enabled))
+}
+
+#[tauri::command]
+pub async fn delete_rule(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    with_db(&state, |c| db::delete_rule(c, id))
+}
+
 /// An article image as a `data:` URL: the WebView never loads remote images
 /// itself (the CSP has no remote `img-src`), so a feed can't track who read it
 /// from the WebView, and only real images get through (`fetch::image_type`).
@@ -583,6 +628,8 @@ fn host_of(url: &str) -> String {
 
 /// The feed at `url`, or the first feed its page links to.
 async fn fetch_feed_or_page(url: &str) -> CmdResult<(String, fetch::Response, feed::ParsedFeed)> {
+    let youtube = feed::youtube_feed(url);
+    let url = youtube.as_deref().unwrap_or(url);
     let res = match fetch::get(url, None, None, fetch::FEED_ACCEPT, fetch::MAX_FEED_BYTES).await? {
         Outcome::Fetched(r) => r,
         Outcome::NotModified => return Err("取得できませんでした（HTTP 304）".into()),
@@ -593,10 +640,15 @@ async fn fetch_feed_or_page(url: &str) -> CmdResult<(String, fetch::Response, fe
             if !feed::looks_like_html(&res.body) {
                 return Err(parse_error);
             }
-            let candidates = feed::discover(&res.body, &res.url);
-            let first = candidates
-                .first()
-                .ok_or("このページにはフィードが見つかりませんでした")?;
+            let mut candidates = feed::discover(&res.body, &res.url);
+            candidates.extend(feed::youtube_feed_in_page(&res.body, &res.url));
+            let first = candidates.first().ok_or_else(|| {
+                if res.url.contains("youtube.com/") {
+                    "このページにはフィードが見つかりませんでした。YouTube のチャンネルは、チャンネルの URL（https://www.youtube.com/channel/UC…）でも追加できます"
+                } else {
+                    "このページにはフィードが見つかりませんでした"
+                }
+            })?;
             let res = match fetch::get(first, None, None, fetch::FEED_ACCEPT, fetch::MAX_FEED_BYTES)
                 .await?
             {

@@ -177,6 +177,13 @@ fn article(e: Entry, base: &str) -> NewArticle {
     } else {
         content
     };
+    let thumb_url = thumbnail(&e.media, &body, url.as_deref().unwrap_or(base));
+    // YouTube has nothing in either: its text is in <media:group>.
+    let body = if body.trim().is_empty() {
+        media_body(&e.media, thumb_url.as_deref(), url.as_deref())
+    } else {
+        body
+    };
     let summary = truncate(
         &plain_text(if summary_html.trim().is_empty() {
             &body
@@ -191,7 +198,6 @@ fn article(e: Entry, base: &str) -> NewArticle {
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| truncate(&summary, 60));
     let published = e.published.or(e.updated).map(|d| d.timestamp_millis());
-    let thumb_url = thumbnail(&e.media, &body, url.as_deref().unwrap_or(base));
     NewArticle {
         guid: if e.id.is_empty() {
             stable_hash(&[&body, &published.unwrap_or(0).to_string()])
@@ -254,6 +260,78 @@ fn thumbnail(media: &[feed_rs::model::MediaObject], body: &str, base: &str) -> O
             usable(get("src")?)
         })
     })
+}
+
+/// The body of an item whose only text is Media RSS (a YouTube video): its
+/// picture, linked to the article (the video plays in the browser), then its
+/// `<media:description>`. Empty when it has neither.
+fn media_body(
+    media: &[feed_rs::model::MediaObject],
+    thumb: Option<&str>,
+    link: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    if let Some(src) = thumb {
+        let img = format!(r#"<img src="{}" alt="">"#, escape(src));
+        out += &match link {
+            Some(href) => format!(r#"<p><a href="{}">{img}</a></p>"#, escape(href)),
+            None => format!("<p>{img}</p>"),
+        };
+    }
+    let description = media
+        .iter()
+        .filter_map(|m| m.description.as_ref())
+        .find(|d| !d.content.trim().is_empty());
+    if let Some(d) = description {
+        if d.content_type.to_string().starts_with("text/html") {
+            out += &d.content;
+        } else {
+            out += &text_html(&d.content);
+        }
+    }
+    out
+}
+
+/// Plain text as HTML: a blank line between paragraphs, a line break
+/// within one, and its http(s) URLs as links.
+fn text_html(text: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    let mut out = String::new();
+    for para in text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
+        let lines: Vec<String> = para.lines().map(linkify).collect();
+        out += &format!("<p>{}</p>", lines.join("<br>"));
+    }
+    out
+}
+
+/// A line of plain text as HTML, its http(s) URLs as links. A URL ends at
+/// whitespace or a character outside ASCII (Japanese text often follows one
+/// without a space), less any punctuation that closes the sentence.
+fn linkify(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(i) = ["https://", "http://"]
+        .iter()
+        .filter_map(|p| rest.find(p))
+        .min()
+    {
+        out += &escape(&rest[..i]);
+        let tail = &rest[i..];
+        let len = tail
+            .find(|c: char| c.is_whitespace() || !c.is_ascii() || "<>\"".contains(c))
+            .unwrap_or(tail.len());
+        let url = tail[..len].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '\'']);
+        out += &format!(r#"<a href="{0}">{0}</a>"#, escape(url));
+        rest = &tail[url.len()..];
+    }
+    out + &escape(rest)
+}
+
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn is_svg(u: &str) -> bool {
@@ -443,6 +521,65 @@ pub fn discover(html: &[u8], page_url: &str) -> Vec<String> {
         }
     }
     found
+}
+
+fn is_youtube(u: &url::Url) -> bool {
+    u.host_str().is_some_and(|h| {
+        let h = h.to_ascii_lowercase();
+        h == "youtube.com" || h.ends_with(".youtube.com")
+    })
+}
+
+/// The feed of a YouTube channel or playlist that its URL alone names
+/// (`/channel/UC…`, `/user/…`, `…?list=…`), so the page isn't fetched: in
+/// the EU it can be a consent page with nothing in it (docs/YOUTUBE.md).
+pub fn youtube_feed(page_url: &str) -> Option<String> {
+    let u = url::Url::parse(page_url).ok()?;
+    if !is_youtube(&u) || u.path().starts_with("/feeds/") {
+        return None;
+    }
+    let feed = |key: &str, value: &str| {
+        let mut f = url::Url::parse("https://www.youtube.com/feeds/videos.xml").ok()?;
+        f.query_pairs_mut().append_pair(key, value);
+        Some(f.to_string())
+    };
+    let mut segments = u.path_segments()?.filter(|s| !s.is_empty());
+    match (segments.next(), segments.next()) {
+        (Some("channel"), Some(id)) if is_channel_id(id) => feed("channel_id", id),
+        (Some("user"), Some(name)) => feed("user", name),
+        (Some("playlist"), _) => {
+            let list = u.query_pairs().find(|(k, _)| k == "list")?.1;
+            feed("playlist_id", &list)
+        }
+        _ => None,
+    }
+}
+
+/// The feed of the YouTube channel a page is of (`/@name`, `/c/…`) or
+/// belongs to (a video), from the channel id in it: for a page that names
+/// no feed with `<link rel="alternate">`.
+pub fn youtube_feed_in_page(html: &[u8], page_url: &str) -> Option<String> {
+    if !url::Url::parse(page_url).is_ok_and(|u| is_youtube(&u)) {
+        return None;
+    }
+    let text = String::from_utf8_lossy(html);
+    // The page's own channel comes before the ones it recommends.
+    ["\"externalId\":\"", "\"channelId\":\""]
+        .iter()
+        .find_map(|key| {
+            let start = text.find(key)? + key.len();
+            let id = text.get(start..start + 24)?;
+            is_channel_id(id).then(|| id.to_string())
+        })
+        .and_then(|id| youtube_feed(&format!("https://www.youtube.com/channel/{id}")))
+}
+
+/// `UC` and 22 characters of base64url.
+fn is_channel_id(s: &str) -> bool {
+    s.len() == 24
+        && s.starts_with("UC")
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// The icons a web page names with `<link rel="icon">` / `"shortcut icon"` /
@@ -827,5 +964,113 @@ mod tests {
         );
         assert!(icon_links(b"<html></html>", "https://site.example/").is_empty());
         assert!(icon_links(html, "not a url").is_empty());
+    }
+
+    const YOUTUBE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=UCabcdefghijklmnopqrstuv"/>
+ <id>yt:channel:abcdefghijklmnopqrstuv</id>
+ <title>Example Channel</title>
+ <link rel="alternate" href="https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv"/>
+ <entry>
+  <id>yt:video:VID123</id>
+  <yt:videoId>VID123</yt:videoId>
+  <title>動画のタイトル</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=VID123"/>
+  <author><name>Example Channel</name></author>
+  <published>2026-10-01T00:00:00+00:00</published>
+  <media:group>
+   <media:title>動画のタイトル</media:title>
+   <media:content url="https://www.youtube.com/v/VID123?version=3" type="application/x-shockwave-flash" width="640" height="390"/>
+   <media:thumbnail url="https://i1.ytimg.com/vi/VID123/hqdefault.jpg" width="480" height="360"/>
+   <media:description>説明の 1 行目 &lt;b&gt;
+詳しくはhttps://example.com/a?x=1&amp;y=2。(https://example.com/b)
+
+2 段落目</media:description>
+  </media:group>
+ </entry>
+</feed>"#;
+
+    #[test]
+    fn youtube_description_is_the_body() {
+        let url = "https://www.youtube.com/feeds/videos.xml?channel_id=UCabcdefghijklmnopqrstuv";
+        let feed = parse(YOUTUBE.as_bytes(), url).unwrap();
+        let a = &feed.articles[0];
+        assert_eq!(a.title, "動画のタイトル");
+        assert_eq!(
+            a.thumb_url.as_deref(),
+            Some("https://i1.ytimg.com/vi/VID123/hqdefault.jpg")
+        );
+        assert_eq!(
+            a.content,
+            concat!(
+                r#"<p><a href="https://www.youtube.com/watch?v=VID123"><img src="https://i1.ytimg.com/vi/VID123/hqdefault.jpg" alt=""></a></p>"#,
+                r#"<p>説明の 1 行目 &lt;b&gt;<br>詳しくは<a href="https://example.com/a?x=1&amp;y=2">https://example.com/a?x=1&amp;y=2</a>。(<a href="https://example.com/b">https://example.com/b</a>)</p>"#,
+                "<p>2 段落目</p>"
+            )
+        );
+        assert!(
+            a.summary.starts_with("説明の 1 行目 <b> 詳しくは"),
+            "{}",
+            a.summary
+        );
+    }
+
+    #[test]
+    fn media_body_only_when_the_feed_has_no_text() {
+        let xml = YOUTUBE.replace(
+            "<title>動画のタイトル</title>",
+            "<title>動画のタイトル</title><summary>要約</summary>",
+        );
+        let feed = parse(xml.as_bytes(), "https://www.youtube.com/feeds/videos.xml").unwrap();
+        assert_eq!(feed.articles[0].content, "要約");
+    }
+
+    #[test]
+    fn youtube_feed_from_the_url() {
+        let feed = |u| youtube_feed(u);
+        assert_eq!(
+            feed("https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv/videos").as_deref(),
+            Some("https://www.youtube.com/feeds/videos.xml?channel_id=UCabcdefghijklmnopqrstuv")
+        );
+        assert_eq!(
+            feed("https://m.youtube.com/user/someone").as_deref(),
+            Some("https://www.youtube.com/feeds/videos.xml?user=someone")
+        );
+        assert_eq!(
+            feed("https://www.youtube.com/playlist?list=PL123&si=x").as_deref(),
+            Some("https://www.youtube.com/feeds/videos.xml?playlist_id=PL123")
+        );
+        // A handle or a video names no channel: the page is fetched.
+        assert_eq!(feed("https://www.youtube.com/@someone"), None);
+        assert_eq!(feed("https://www.youtube.com/watch?v=VID123"), None);
+        assert_eq!(feed("https://www.youtube.com/channel/not-an-id"), None);
+        assert_eq!(
+            feed("https://www.youtube.com/feeds/videos.xml?user=someone"),
+            None
+        );
+        assert_eq!(
+            feed("https://notyoutube.com/channel/UCabcdefghijklmnopqrstuv"),
+            None
+        );
+    }
+
+    #[test]
+    fn youtube_feed_from_the_page() {
+        let page = br#"<html><script>var ytInitialData = {"metadata":{"channelMetadataRenderer":{"externalId":"UCabcdefghijklmnopqrstuv"}},"x":{"channelId":"UCzzzzzzzzzzzzzzzzzzzzzz"}}</script></html>"#;
+        assert_eq!(
+            youtube_feed_in_page(page, "https://www.youtube.com/@someone").as_deref(),
+            Some("https://www.youtube.com/feeds/videos.xml?channel_id=UCabcdefghijklmnopqrstuv")
+        );
+        let video = br#"<script>{"videoDetails":{"videoId":"VID123","channelId":"UCzzzzzzzzzzzzzzzzzzzzzz"}}</script>"#;
+        assert_eq!(
+            youtube_feed_in_page(video, "https://www.youtube.com/watch?v=VID123").as_deref(),
+            Some("https://www.youtube.com/feeds/videos.xml?channel_id=UCzzzzzzzzzzzzzzzzzzzzzz")
+        );
+        assert_eq!(youtube_feed_in_page(page, "https://site.example/"), None);
+        assert_eq!(
+            youtube_feed_in_page(b"<html>consent</html>", "https://consent.youtube.com/m"),
+            None
+        );
     }
 }

@@ -10,6 +10,7 @@ pub mod opened;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
+pub mod search;
 pub mod stockroom;
 pub mod thumb;
 
@@ -165,6 +166,10 @@ pub fn run() {
             set_starred,
             set_later,
             mark_all_read,
+            list_rules,
+            add_rule,
+            set_rule_enabled,
+            delete_rule,
             image_data_url,
             thumbnail_data_url,
             open_url,

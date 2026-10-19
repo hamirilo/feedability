@@ -183,6 +183,23 @@ export interface AppSettings {
   uiScale: number;
 }
 
+/** A ミュート rule (docs/MUTE.md; db.rs `Rule`). */
+export interface Rule {
+  id: number;
+  /** Separated by spaces: an article with all of them is marked read. */
+  words: string;
+  /** Where it applies: one feed, one folder, or (both null) every feed. */
+  feedId: number | null;
+  folderId: number | null;
+  enabled: boolean;
+}
+
+export interface AddedRule {
+  rule: Rule;
+  /** The unread articles it marked read at once, for 元に戻す. */
+  marked: number[];
+}
+
 export interface Added {
   feedId: number;
   title: string;
@@ -221,6 +238,12 @@ export const api = {
   setLater: (ids: number[], later: boolean) => invoke<void>("set_later", { ids, later }),
   /** Returns the ids it marked, for 元に戻す. */
   markAllRead: (query: ArticleQuery) => invoke<number[]>("mark_all_read", { query }),
+  listRules: () => invoke<Rule[]>("list_rules"),
+  /** Applied at once to the unread articles already there. */
+  addRule: (words: string, feedId: number | null, folderId: number | null) =>
+    invoke<AddedRule>("add_rule", { words, feedId, folderId }),
+  setRuleEnabled: (id: number, enabled: boolean) => invoke<void>("set_rule_enabled", { id, enabled }),
+  deleteRule: (id: number) => invoke<void>("delete_rule", { id }),
   imageDataUrl: (url: string) => invoke<string>("image_data_url", { url }),
   /** An article picture made small for the list (lib/thumbs.ts). */
   thumbnailDataUrl: (url: string) => invoke<string>("thumbnail_data_url", { url }),

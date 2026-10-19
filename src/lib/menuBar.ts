@@ -128,6 +128,8 @@ async function build(): Promise<Menu> {
     cmd("feed.move"),
     cmd("feed.delete"),
     sep(),
+    cmd("feed.mute"),
+    sep(),
     cmd("folder.refresh"),
     cmd("folder.rename"),
     cmd("folder.delete"),
