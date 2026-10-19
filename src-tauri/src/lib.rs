@@ -30,7 +30,8 @@ fn log_panics() {
 }
 
 /// The window, from tauri.conf.json (where it isn't created by itself), in
-/// the saved theme: light or dark, or the OS's (docs/THEME.md).
+/// the saved theme: light or dark, or the OS's (docs/THEME.md), and the
+/// saved 表示の大きさ (docs/UI_SCALE.md).
 fn main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     let config = app
         .config()
@@ -40,7 +41,9 @@ fn main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .find(|w| w.label == "main")
         .expect("window in tauri.conf.json");
     let window = tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
-    apply_theme(&window, saved_theme(app));
+    let settings = saved_settings(app);
+    apply_theme(&window, settings.theme);
+    apply_ui_scale(&window, settings.ui_scale);
     Ok(())
 }
 

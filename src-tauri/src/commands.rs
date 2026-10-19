@@ -107,6 +107,8 @@ pub struct AppSettings {
     next_feed_after_read_all: bool,
     /// When opening an article marks it read (docs/READING.md).
     mark_read_on: MarkReadOn,
+    /// 表示の大きさ: the whole page's zoom, in percent (docs/UI_SCALE.md).
+    pub ui_scale: u32,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
@@ -151,9 +153,26 @@ pub fn apply_theme(window: &tauri::WebviewWindow, theme: Theme) {
     let _ = window.set_background_color(Some(if dark { BG_DARK } else { BG_LIGHT }));
 }
 
-/// The saved theme, for the window at launch (lib.rs).
-pub fn saved_theme(app: &AppHandle) -> Theme {
-    load_settings(app).theme
+/// 表示の大きさ (docs/UI_SCALE.md): the steps the settings offer. A value
+/// from a hand-edited file between them is kept; one outside goes to the end.
+pub const UI_SCALE_MIN: u32 = 80;
+pub const UI_SCALE_MAX: u32 = 150;
+
+fn zoom_factor(percent: u32) -> f64 {
+    f64::from(percent.clamp(UI_SCALE_MIN, UI_SCALE_MAX)) / 100.0
+}
+
+/// The whole page larger or smaller, text, spacing and rows alike, like a
+/// browser's zoom. Done from Rust so the page needs no webview permission.
+pub fn apply_ui_scale(window: &tauri::WebviewWindow, percent: u32) {
+    if let Err(e) = window.set_zoom(zoom_factor(percent)) {
+        log::warn!("zoom: {e}");
+    }
+}
+
+/// The saved settings, for the window at launch (lib.rs).
+pub fn saved_settings(app: &AppHandle) -> AppSettings {
+    load_settings(app)
 }
 
 impl Default for AppSettings {
@@ -165,6 +184,7 @@ impl Default for AppSettings {
             theme: Theme::System,
             next_feed_after_read_all: false,
             mark_read_on: MarkReadOn::Open,
+            ui_scale: 100,
         }
     }
 }
@@ -278,6 +298,7 @@ pub async fn get_app_settings(app: AppHandle) -> AppSettings {
 pub async fn set_app_settings(app: AppHandle, settings: AppSettings) -> CmdResult<AppSettings> {
     if let Some(w) = app.get_webview_window("main") {
         apply_theme(&w, settings.theme);
+        apply_ui_scale(&w, settings.ui_scale);
     }
     update_settings_file(&app, |file| file.app = settings.clone())?;
     Ok(settings)
@@ -1680,6 +1701,15 @@ mod tests {
         assert!(!s.auto_update);
         let s: AppSettings = serde_json::from_str(r#"{"markReadOn":"delay"}"#).unwrap();
         assert_eq!(s.mark_read_on, MarkReadOn::Delay);
+    }
+
+    #[test]
+    fn ui_scale_defaults_to_100_and_stays_in_range() {
+        let s: AppSettings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(s.ui_scale, 100);
+        assert_eq!(zoom_factor(125), 1.25);
+        assert_eq!(zoom_factor(0), 0.8);
+        assert_eq!(zoom_factor(400), 1.5);
     }
 
     #[test]

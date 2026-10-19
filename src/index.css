@@ -118,7 +118,8 @@ body,
 }
 :root[data-titlebar="overlay"]:not([data-fullscreen]) {
   --titlebar: 40px;
-  --traffic-lights: 84px;
+  /* The window buttons don't grow with 表示の大きさ (docs/UI_SCALE.md). */
+  --traffic-lights: calc(84px / var(--ui-zoom, 1));
 }
 
 body {
