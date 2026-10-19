@@ -63,6 +63,13 @@ fn main() {
     time("unread", q(View::All, true, ""));
     time("folder", q(View::Folder { id: 1 }, false, ""));
     time("search", q(View::All, false, "記事 12"));
+    // docs/SEARCH.md: in the text, a word shorter than a trigram, OR and -.
+    time("search text", q(View::All, false, "本文"));
+    time("search short", q(View::All, false, "本"));
+    time(
+        "search or",
+        q(View::All, false, "記事 12 OR 記事 345 -フィード"),
+    );
     let t = Instant::now();
     db::sidebar(&conn).unwrap();
     println!("sidebar in {:?}", t.elapsed());

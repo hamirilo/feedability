@@ -10,6 +10,7 @@ pub mod opened;
 pub mod opml;
 pub mod proxy;
 pub mod sanitize;
+pub mod search;
 pub mod stockroom;
 pub mod thumb;
 

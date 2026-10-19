@@ -172,11 +172,25 @@ function matches(a: MockArticle, q: ArticleQuery): boolean {
   if (v.kind === "later" && a.laterAt === null) return false;
   if (v.kind === "feed" && a.feedId !== v.id) return false;
   if (v.kind === "folder" && feeds.find((f) => f.id === a.feedId)?.folderId !== v.id) return false;
-  for (const word of q.search.toLowerCase().split(/\s+/).filter(Boolean)) {
-    const hay = `${a.title}\n${a.summary}\n${feedTitle(a.feedId)}`.toLowerCase();
-    if (!hay.includes(word)) return false;
+  const groups = parseSearch(q.search);
+  if (!groups.length) return true;
+  const text = (a.fullHtml ?? a.html).replace(/<[^>]*>/g, " ");
+  const hay = `${a.title}\n${a.summary}\n${text}\n${feedTitle(a.feedId)}`.toLowerCase();
+  return groups.some((g) => g.every((t) => hay.includes(t.text.toLowerCase()) !== t.negated));
+}
+
+/** search.rs `parse`: words, `"a phrase"`, `-word`, and `OR` between sets of them. */
+function parseSearch(q: string): { text: string; negated: boolean }[][] {
+  const groups: { text: string; negated: boolean }[][] = [[]];
+  for (const m of q.matchAll(/([-－]?)(?:["“”＂]([^"“”＂]*)["“”＂]?|(\S+))/g)) {
+    const negated = m[1] !== "";
+    const quoted = m[2] !== undefined;
+    const text = (m[2] ?? m[3]).trim();
+    if (!quoted && (text === "-" || text === "－")) continue;
+    if (!quoted && !negated && text === "OR") groups.push([]);
+    else if (text) groups[groups.length - 1].push({ text, negated });
   }
-  return true;
+  return groups.filter((g) => g.length);
 }
 
 function sidebar(): Sidebar {
