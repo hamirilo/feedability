@@ -237,6 +237,35 @@ textarea {
   min-height: 120px;
   background: var(--color-raised);
 }
+/* A 会話の吹き出し (Reader.tsx `markBalloons`): the icon small beside the
+   words, on the side the feed put it. */
+.article [data-balloon] {
+  display: flex;
+  gap: 0.8em;
+  align-items: flex-start;
+}
+.article [data-balloon-icon] {
+  flex: none;
+  width: 64px;
+  margin: 0;
+  text-align: center;
+  font-size: 0.75em;
+  line-height: 1.4;
+}
+.article [data-balloon-icon] img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  min-height: 0;
+  object-fit: contain;
+}
+.article [data-balloon] > :not([data-balloon-icon]) {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6em 0.9em;
+  border-radius: 8px;
+  background: var(--color-raised);
+}
 .article figcaption {
   font-size: 0.85em;
   color: var(--color-dim);

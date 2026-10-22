@@ -93,6 +93,43 @@ function dropRepeatedImages(doc: Document) {
   }
 }
 
+/** The text of `el`, spaces left out (Japanese has none to count). */
+function textLength(el: Element): number {
+  return (el.textContent ?? "").replace(/\s+/g, "").length;
+}
+
+/**
+ * Marks a 会話の吹き出し: a character's icon (and name) beside what they say.
+ * Japanese WordPress themes draw one as a small round icon with their own
+ * CSS (mupon.net's `voice`, Cocoon, SWELL, AFFINGER), and the feed carries
+ * no size, so the icon would show as a full-width picture. The classes are
+ * gone (sanitize.rs), so it goes by shape, whatever the theme: an element
+ * of exactly two, one the icon (one image, at most a short name) and the
+ * other the words (some text, no image or heading). The outermost such pair
+ * is the balloon: inside Cocoon's, the icon and the name are a pair too.
+ * A pair inside a link is a link card, not a balloon.
+ *
+ * `data-balloon` / `data-balloon-icon` are set here only (ammonia drops a
+ * feed's `data-` attributes); index.css lays them out.
+ */
+function markBalloons(doc: Document) {
+  const isIcon = (el: Element) => el.querySelectorAll("img").length === 1 && textLength(el) <= 20;
+  const isWords = (el: Element) => {
+    const length = textLength(el);
+    return length > 0 && length <= 400 && !el.querySelector("img, h1, h2, h3, h4, h5, h6");
+  };
+  // In document order, so an outer balloon is found before the pairs inside it.
+  for (const pair of doc.body.querySelectorAll("*")) {
+    if (pair.childElementCount !== 2 || pair.closest("a, [data-balloon]")) continue;
+    if ([...pair.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim())) continue;
+    const [first, last] = [pair.firstElementChild!, pair.lastElementChild!];
+    const icon = isIcon(first) && isWords(last) ? first : isIcon(last) && isWords(first) ? last : null;
+    if (!icon) continue;
+    pair.setAttribute("data-balloon", "");
+    icon.setAttribute("data-balloon-icon", "");
+  }
+}
+
 function Body({ html }: { html: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -106,6 +143,7 @@ function Body({ html }: { html: string }) {
       else img.remove();
     }
     dropRepeatedImages(doc);
+    markBalloons(doc);
     root.replaceChildren(...doc.body.childNodes);
     let stop = false;
     void loadImages(root, () => stop);
