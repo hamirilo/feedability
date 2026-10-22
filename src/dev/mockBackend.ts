@@ -155,7 +155,12 @@ function addArticle(feedId: number, published: number, n: number) {
       `<p>${LOREM}</p><h2>見出し</h2><p>本文の中の <a href="https://example.com/">リンク</a> はブラウザで開きます。</p>` +
       `<ul><li>項目 1</li><li>項目 2</li></ul><blockquote>引用です。</blockquote>` +
       `<pre><code>fn main() {\n    println!("hello");\n}</code></pre>` +
-      `<p><img src="https://example.com/photo-${id}.png" alt="写真"></p><p>${LOREM}</p>`,
+      `<p><img src="https://example.com/photo-${id}.png" alt="写真"></p><p>${LOREM}</p>` +
+      // 会話の吹き出し as a WordPress theme writes it (Reader.tsx `markBalloons`).
+      (n % 4 === 1
+        ? `<div><figure><img src="https://example.com/neko.png"><figcaption>ねこ</figcaption></figure><div><p>アイコンは小さく、言葉の横に出ます。</p></div></div>` +
+          `<div><div><p>反対側にも置けますわね。</p></div><figure><img src="https://example.com/mano.png"><figcaption>まの</figcaption></figure></div>`
+        : ""),
   });
 }
 

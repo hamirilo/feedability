@@ -22,11 +22,17 @@
 - **同じ画像を二度出さない**：フィードによっては、本文の先頭にアイキャッチ画像を足し、そのあとの本文も同じ画像で始まる（kachibito.net）。本文の中で、上にすでに出た画像と同じものは 2 つ目以降を出さない
   - 同じかどうかは URL で見る。`#` 以降は無視し、WordPress の大きさ違い（`photo-1024x576.png` と `photo.png`）は同じとみなす。`?` 以降は残す（`?id=` だけで別の画像を区別するサイトがある）
   - 消すのは単独で置かれた画像だけ。文の中の画像（絵文字など）は繰り返しでも残す。画像を消して空になった囲み（`<p>`・`<a>`・`<figure>`）も消す
+- **会話の吹き出しはアイコンを小さく**：日本の WordPress テーマの「吹き出し」（mupon.net、Cocoon、SWELL、AFFINGER など）は、キャラクターのアイコンをテーマの CSS で小さく丸く見せている。フィードには大きさが無いので、そのままでは 1 体ずつ本文の幅いっぱいの画像になる（Reeder も同じ）。アイコンを 64 px にして、言葉の横に並べる
+  - サイトごとの対応はしない。クラス名はサニタイズで消えるので、HTML の形で見分ける：子がちょうど 2 つの囲みで、片方が「画像 1 枚と短い名前（20 字まで）」、もう片方が「文字がある（400 字まで）・画像も見出しも無い」もの。いちばん外側の組を吹き出しとする（Cocoon はアイコンと名前の組が中にある）
+  - リンクの中の組（関連記事のカード）は吹き出しにしない
+  - アイコンは元の HTML の側（先なら左、後なら右）に置く。名前はアイコンの下、言葉は背景付きの囲み
+  - 自動で判定し、切り替えは無い。誤判定するフィードが出たら、フィードごとにオフにできるようにする（フィードの情報と設定の「設定」の欄）
 
 ## 実装
 
 - フロント：`lib/reading.ts`（段階の値と検証）、`store.ts` の `textSize` / `lineHeight` / `textWidth` と `setTextSize` ほか、`Reader.tsx` の `DisplayButton`。本文は `<article>` に `--article-size` / `--article-leading` を置き、`index.css` の `.article` がそれを読む
 - コマンド表：`view.textBigger`（`Mod+Plus`）、`view.textSmaller`（`Mod+Minus`）、`view.textReset`（`Mod+0`）。`commands.ts` の `keyMatches` に `Plus` / `Minus`、`menuBar.ts` の `accelerator` に `Equal` / `Minus` への対応を足した
 - 画像の重複：`Reader.tsx` の `dropRepeatedImages`（`imageKey` で同じ画像を判定）。画像を取りに行く前に消すので、取得の数も増えない
+- 吹き出し：`Reader.tsx` の `markBalloons` が、画像を取りに行く前の文書で `data-balloon` / `data-balloon-icon` を付け、`index.css` が並べる。フィードの `data-` 属性は ammonia が消すので、フィードから付けることはできない。モックの記事（4 件に 1 件）に左右の吹き出しがある
 - 既読：`store.ts` の `select` が `markReadOn` を見る。タイマーはモジュールの `readTimer`（`finishOnLeave` と同じ作り）。発火したとき `selectedId` が同じでなければ何もしない
 - Rust：`AppSettings.mark_read_on`（`MarkReadOn`、`#[serde(default)]` なので古い `settings.json` は `open`）。テストは `commands.rs` 末尾
