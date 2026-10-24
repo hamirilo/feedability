@@ -28,6 +28,11 @@ crate の比較は [research/readability.md](research/readability.md)。
 - Cookie は持たない（今の reqwest のとおり）。ログインが要るページ・有料の記事は、ログインの画面が抜き出されるか失敗して要約のまま。ログインはこのアプリの範囲の外
 - `robots.txt` は見ない。ユーザーがフィードごとにオンにした記事を、ブラウザで開く代わりに 1 回取るだけなので
 - JavaScript で本文を描くページ（SPA）からは抜き出せない。要約のまま
+- 日本のブログの会話の吹き出し（アイコン・名前・ひとこと）は吹き出しのまま見せる。対応するテーマは OPENCAGE（STORK・Hummingbird・Albatros）・Cocoon・SWELL・SANGO・AFFINGER・JIN。各テーマの class と自前の class（`fa-talk`・`fa-talk-r`・`fa-talk-icon`・`fa-talk-name`・`fa-talk-text`）の対応は `sanitize::TALK` に表で持つ。書き方はテーマの公式サイトの記事で確かめた（2026-10-24）
+  - `sanitize::article_html` はこの写し（`sanitize::talk_class`）を通した class だけ残す。フィードの本文にも、全文にも効く
+  - 全文では Readability の前に写す（`fulltext::talk_balloons`）。Readability は `comment` を含む class（OPENCAGE の `voicecomment`）をコメント欄として捨て、画像だけ・短い文字だけの div を `<p>` に作り替えて class を落とし、div 1 つだけを包む div は外側の class で中を上書きする。そのためアイコンは `figure`、名前は `figcaption` に付け替え、包みの class は外す
+  - 並び順と名前の位置がテーマごとに違う（AFFINGER と SANGO は右向きのとき顔が後ろ、JIN は名前がアイコンの外）ので、`src/index.css` の `.fa-talk` は grid で、class から位置を決める。右向きは外枠の `fa-talk-r`、AFFINGER は外枠が左右で同じなのでアイコンの `fa-talk-r`
+  - 取得済みの本文は取り直さないので、直す前に取った記事は吹き出しが欠けたまま
 - stockroom へ送る（[STOCKROOM.md](STOCKROOM.md)）Markdown は、全文があれば全文から作る（段階 1 を作るときに）
 
 ## 守ること

@@ -1201,6 +1201,7 @@ dependencies = [
  "ammonia",
  "base64 0.22.1",
  "core-foundation-sys",
+ "dom_query",
  "dom_smoothie",
  "encoding_rs",
  "feed-rs",
