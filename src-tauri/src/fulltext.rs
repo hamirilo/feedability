@@ -4,6 +4,7 @@
 //! docs/research/readability.md) and is shown through `sanitize::article_html`
 //! like any feed's HTML. This is the one place that uses dom_smoothie.
 
+use dom_query::Document;
 use dom_smoothie::{Config, Readability};
 
 /// More elements than this and the page isn't read: a page that big is not
@@ -55,9 +56,20 @@ fn meta_charset(body: &[u8]) -> Option<String> {
 pub fn extract(html: &str, url: &str) -> Option<String> {
     let cfg = Config {
         max_elements_to_parse: MAX_ELEMENTS,
+        classes_to_preserve: [
+            "fa-talk",
+            "fa-talk-r",
+            "fa-talk-icon",
+            "fa-talk-name",
+            "fa-talk-text",
+        ]
+        .map(String::from)
+        .to_vec(),
         ..Default::default()
     };
-    let mut r = Readability::new(html, Some(url), Some(cfg)).ok()?;
+    let doc = Document::from(html);
+    talk_balloons(&doc);
+    let mut r = Readability::with_document(doc, Some(url), Some(cfg)).ok()?;
     let article = r.parse().ok()?;
     let chars = article
         .text_content
@@ -65,6 +77,36 @@ pub fn extract(html: &str, url: &str) -> Option<String> {
         .filter(|c| !c.is_whitespace())
         .count();
     (chars >= MIN_CHARS).then(|| article.content.to_string())
+}
+
+/// Talk balloons get our classes (sanitize::talk_class) before Readability
+/// reads the page, or it drops `voicecomment` as a comment section and strips
+/// the classes the reader lays them out by. It also folds a div of only an
+/// image or a few words into a <p>, losing the class, so the icon and the
+/// name stop being divs; and a div around a single div hands its class down
+/// over the inner one's (SWELL's wrapper), so a wrapper's class goes.
+fn talk_balloons(doc: &Document) {
+    for el in doc.select("div[class], p[class]").iter() {
+        let Some(class) = el
+            .attr("class")
+            .and_then(|c| crate::sanitize::talk_class(&c))
+        else {
+            continue;
+        };
+        el.set_attr("class", &class);
+        let part = class.split(' ').next().unwrap_or_default();
+        match part {
+            "fa-talk" => {
+                let parent = el.parent();
+                if parent.is("div") && parent.children().length() == 1 {
+                    parent.remove_attr("class");
+                }
+            }
+            "fa-talk-icon" if el.is("div") => el.rename("figure"),
+            "fa-talk-name" => el.rename("figcaption"),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +136,77 @@ mod tests {
         assert!(out.contains("<img"), "{out}");
         assert!(!out.contains("このサイトについて"), "{out}");
         assert!(!out.contains("Copyright"), "{out}");
+    }
+
+    /// One balloon of each theme, as their own sites write them (2026-10):
+    /// (theme, name, words, the HTML).
+    const BALLOONS: &[(&str, &str, &str, &str)] = &[
+        (
+            "OPENCAGE",
+            "まの",
+            "オープンケージの言葉です。",
+            r#"<div class="voice cf r"><figure class="icon"><img src="/a.png"><figcaption class="name">まの</figcaption></figure><div class="voicecomment"><p>オープンケージの言葉です。</p></div></div>"#,
+        ),
+        (
+            "Cocoon",
+            "わいひら",
+            "コクーンの言葉です。",
+            r#"<div class="speech-wrap sb-id-14 sbs-stn sbp-l sbis-cb cf"><div class="speech-person"><figure class="speech-icon"><img class="speech-icon-image" src="/a.png" alt="わいひら"></figure><div class="speech-name">わいひら</div></div><div class="speech-balloon"><p>コクーンの言葉です。</p></div></div>"#,
+        ),
+        (
+            "SWELL",
+            "了",
+            "スウェルの言葉です。",
+            r#"<div class="swell-block-balloon"><div class="c-balloon -bln-right" data-col="blue"><div class="c-balloon__icon -circle"><img src="/a.png" alt="" class="c-balloon__iconImg" width="80px" height="80px"><span class="c-balloon__iconName">了</span></div><div class="c-balloon__body -speaking -border-none"><div class="c-balloon__text"><p>スウェルの言葉です。</p><span class="c-balloon__shapes"><span class="c-balloon__before"></span><span class="c-balloon__after"></span></span></div></div></div></div>"#,
+        ),
+        (
+            "SANGO",
+            "サルワカくん",
+            "サンゴの言葉です。",
+            r#"<div class="say right"> <div class="chatting"><div class="sc">サンゴの言葉です。</div></div> <p class="faceicon"><img src="/a.png" width="110"><span>サルワカくん</span></p> </div>"#,
+        ),
+        (
+            "AFFINGER",
+            "じい",
+            "アフィンガーの言葉です。",
+            r#"<div class="st-kaiwa-box clearfix st-kaiwa st-kaiwa-1742 wp-block-st-blocks-st-kaiwa"><div class="st-kaiwa-area2"><div class="st-kaiwa-hukidashi2"><div class="st-kaiwa-hukidashi-content"><p>アフィンガーの言葉です。</p></div></div></div><div class="st-kaiwa-face2"><img width="60" height="60" src="/a.png" alt=""><div class="st-kaiwa-face-name">じい</div></div></div>"#,
+        ),
+        (
+            "JIN",
+            "ひつじくん",
+            "ジンの言葉です。",
+            r#"<div class="balloon-box balloon-right balloon-gray balloon-bg-gray clearfix"><div class="balloon-icon "><img src="/a.png" alt="ひつじくん" width="80" height="80"></div><div class="icon-name">ひつじくん</div><div class="balloon-serif"><div class="balloon-content">ジンの言葉です。</div></div></div>"#,
+        ),
+    ];
+
+    #[test]
+    fn keeps_talk_balloons() {
+        let para = "これは記事の本文の段落です。ページの中で、いちばん文章が多いところが記事として選ばれます。".repeat(3);
+        for (theme, name, words, balloon) in BALLOONS {
+            let html = page(&format!(
+                "<article><p>{para}</p>{balloon}<p>{para}</p></article>"
+            ));
+            let out = extract(&html, "https://example.com/news/1").expect("an article");
+            let out = crate::sanitize::article_html(&out, Some("https://example.com/news/1"));
+            assert!(out.contains(r#"<div class="fa-talk"#), "{theme}: {out}");
+            assert!(out.contains(name) && out.contains(words), "{theme}: {out}");
+            // The image is in the icon: ours, or OPENCAGE's bare figure.
+            assert!(
+                out.contains(r#"class="fa-talk-icon"#) || out.contains("<figure><img"),
+                "{theme}: {out}"
+            );
+            // A name outside the icon (JIN) keeps ours, or it would be
+            // laid out as the text.
+            if *theme == "JIN" {
+                assert!(out.contains(r#"class="fa-talk-name""#), "{theme}: {out}");
+            }
+            // Every sample is on the right but Cocoon's.
+            assert_eq!(
+                out.contains("fa-talk-r"),
+                *theme != "Cocoon",
+                "{theme}: {out}"
+            );
+        }
     }
 
     #[test]

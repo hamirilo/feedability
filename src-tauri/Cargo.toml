@@ -69,6 +69,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # html5ever 0.39, which Tauri already has in the tree (at build time); see
 # docs/research/readability.md.
 dom_smoothie = "0.18"
+# Full text: the page touched up before dom_smoothie reads it (fulltext.rs).
+# Already in the tree through dom_smoothie.
+dom_query = "0.28"
 # Full text: a page in its own encoding (Shift_JIS, EUC-JP) read as text.
 # Already in the tree through quick-xml.
 encoding_rs = "0.8"
