@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.2
+
+### 変更点
+
+- 全文取得で、ブログの会話の吹き出し（OPENCAGE〔STORK など〕・Cocoon・SWELL・SANGO・AFFINGER・JIN のテーマ）の言葉が消え、アイコンが本文の幅いっぱいに出ていたのを修正。吹き出しのまま、アイコンと名前と言葉を並べて表示する
+
+### ダウンロード
+
+- macOS（Apple Silicon）：`Feedability_0.7.2_aarch64.dmg`
+- Windows：`Feedability_0.7.2_x64-setup.exe`
+
 ## 0.7.1
 
 ### 変更点
